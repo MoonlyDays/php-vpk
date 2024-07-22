@@ -12,28 +12,30 @@ final class VpkArchive
 
     public int $Version = 0;
 
-    /** @var int The size, in bytes, of the directory tree */
+    /**
+     * The size, in bytes, of the directory tree
+     */
     public int $TreeSize = 0;
 
-    /** @var int How many bytes of file content are stored in this VPK file (0 in CSGO) */
+    /**
+     * How many bytes of file content are stored in this VPK file (0 in CSGO)
+     */
     public int $FileDataSectionSize = 0;
 
-    /** @var int The size, in bytes, of the section containing MD5 checksums for external archive content */
+    /**
+     * The size, in bytes, of the section containing MD5 checksums for external archive content
+     */
     public int $ArchiveMD5SectionSize = 0;
 
-    /** @var int The size, in bytes, of the section containing MD5 checksums for content in this file (should always be 48) */
+    /**
+     * he size, in bytes, of the section containing MD5 checksums for content in this file (should always be 48)
+     */
     public int $OtherMD5SectionSize = 0;
 
-    /** @var int The size, in bytes, of the section containing the public key and signature. This is either 0 (CSGO & The Ship) or 296 (HL2, HL2:DM, HL2:EP1, HL2:EP2, HL2:LC, TF2, DOD:S & CS:S) */
+    /**
+     * The size, in bytes, of the section containing the public key and signature. This is either 0 (CSGO & The Ship) or 296 (HL2, HL2:DM, HL2:EP1, HL2:EP2, HL2:LC, TF2, DOD:S & CS:S)
+     */
     public int $SignatureSectionSize = 0;
-
-    /** @var VPKEntry[] */
-    private array $entries = [];
-
-    /** @var array<string, VPKEntry> */
-    private array $entryByPath = [];
-
-    private array $files = [];
 
     public string $vpkPath;
 
@@ -41,10 +43,26 @@ final class VpkArchive
 
     public string $vpkName;
 
-    /** @var (resource|false)[] */
+    /**
+     * @var VPKEntry[]
+     */
+    private array $entries = [];
+
+    /**
+     * @var array<string, VPKEntry>
+     */
+    private array $entryByPath = [];
+
+    private array $files = [];
+
+    /**
+     * @var (resource|false)[]
+     */
     private array $archives = [];
 
-    /** @return resource|null */
+    /**
+     * @return resource|null
+     */
     private function archive(int $idx)
     {
         // Archive is marked as unavailable.
@@ -93,7 +111,7 @@ final class VpkArchive
     }
 
     /**
-     * @throws Exception
+     * @throws VpkException
      */
     public function __construct(string $filePath)
     {

@@ -1,0 +1,23 @@
+{
+    "name": "moonlydays/php-vpk",
+    "description": "Valve's VPK archive implementation for PHP",
+    "license": "MIT",
+    "homepage": "https://github.com/MoonlyDays/php-vpk",
+    "autoload": {
+        "psr-4": {
+            "MoonlyDays\\VPK\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Daniil Basiuc-Brinzei",
+            "email": "contact@moonlydays.com"
+        }
+    ],
+    "require-dev": {
+        "laravel/pint": "^1.16"
+    },
+    "require": {
+        "wapmorgan/binary-stream": "^0.4.0"
+    }
+}

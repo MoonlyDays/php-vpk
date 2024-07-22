@@ -2,6 +2,7 @@
 
 namespace MoonlyDays\VPK;
 
+use wapmorgan\BinaryStream\BinaryStream;
 
 final class VpkArchive
 {
@@ -88,27 +89,27 @@ final class VpkArchive
         $this->vpkDir = dirname($filePath);
         $this->vpkName = basename($filePath);
 
-        $this->stream = new BinaryStreamfilePath);
-        $sig = $this->stream->readInt32();
+        $this->stream = new BinaryStream($filePath);
+        $sig = $this->stream->readInteger();
 		
         if($sig != self::SIGNATURE) {
             throw new VpkException("Invalid Header Signature");
 		}
 
-        $this->Version = $this->stream->readInt32();
+        $this->Version = $this->stream->readInteger();
 
         // only read this for VPKs of version 2.0
         if($this->Version >= 1)
         {
-            $this->TreeSize = $this->stream->readInt32();
+            $this->TreeSize = $this->stream->readInteger();
         }
 
         if($this->Version >= 2)
         {
-            $this->FileDataSectionSize = $this->stream->readInt32();
-            $this->ArchiveMD5SectionSize = $this->stream->readInt32();
-            $this->OtherMD5SectionSize = $this->stream->readInt32();
-            $this->SignatureSectionSize = $this->stream->readInt32();
+            $this->FileDataSectionSize = $this->stream->readInteger();
+            $this->ArchiveMD5SectionSize = $this->stream->readInteger();
+            $this->OtherMD5SectionSize = $this->stream->readInteger();
+            $this->SignatureSectionSize = $this->stream->readInteger();
         }
 
         while(true)
@@ -133,12 +134,12 @@ final class VpkArchive
 					}
 
                     $entry = new VPKEntry($fileDir, $fileName, $fileExt);
-                    $entry->CRC = $this->stream->readInt32();
-                    $entry->PreloadBytes = $this->stream->readInt16();
-                    $entry->ArchiveIndex = $this->stream->readInt16();
-                    $entry->EntryOffset = $this->stream->readInt32();
-                    $entry->EntryLength = $this->stream->readInt32();
-                    $entry->Terminator = $this->stream->readInt16();
+                    $entry->CRC = $this->stream->readInteger();
+                    $entry->PreloadBytes = $this->stream->readInteger(16);
+                    $entry->ArchiveIndex = $this->stream->readInteger(16);
+                    $entry->EntryOffset = $this->stream->readInteger();
+                    $entry->EntryLength = $this->stream->readInteger();
+                    $entry->Terminator = $this->stream->readInteger(16);
 
                     $this->entryByPath[$entry->path] = $entry;
                     $this->entries[] = $entry;

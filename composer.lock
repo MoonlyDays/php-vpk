@@ -4,52 +4,8 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "56cdf9dd6d55a5b08cff89abf5da9033",
-    "packages": [
-        {
-            "name": "wapmorgan/binary-stream",
-            "version": "0.4.0",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/wapmorgan/BinaryStream.git",
-                "reference": "ca4989c15801635d79f65426b1b0fc6fe803b620"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/wapmorgan/BinaryStream/zipball/ca4989c15801635d79f65426b1b0fc6fe803b620",
-                "reference": "ca4989c15801635d79f65426b1b0fc6fe803b620",
-                "shasum": ""
-            },
-            "require": {
-                "php": ">=5.3.0"
-            },
-            "require-dev": {
-                "phpunit/phpunit": "~4.8.35"
-            },
-            "type": "library",
-            "autoload": {
-                "psr-4": {
-                    "wapmorgan\\BinaryStream\\": "src/"
-                }
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "license": [
-                "MIT"
-            ],
-            "description": "A handy tool for working with binary data",
-            "keywords": [
-                "binary",
-                "binary-data",
-                "reader",
-                "writer"
-            ],
-            "support": {
-                "issues": "https://github.com/wapmorgan/BinaryStream/issues",
-                "source": "https://github.com/wapmorgan/BinaryStream/tree/master"
-            },
-            "time": "2017-06-18T01:02:52+00:00"
-        }
-    ],
+    "content-hash": "698011de79468289ec52e063432f84e3",
+    "packages": [],
     "packages-dev": [
         {
             "name": "laravel/pint",
@@ -123,7 +79,9 @@
     "stability-flags": [],
     "prefer-stable": false,
     "prefer-lowest": false,
-    "platform": [],
+    "platform": {
+        "php": "^8.2"
+    },
     "platform-dev": [],
     "plugin-api-version": "2.6.0"
 }

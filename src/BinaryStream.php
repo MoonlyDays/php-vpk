@@ -4,31 +4,18 @@ namespace MoonlyDays\VPK;
 
 class BinaryStream
 {
-    private int $ptr;
-    private array $data;
+    private mixed $resource;
 
-    private function __construct(array $bytes)
+    public function __construct(string $file)
     {
-        $this->data = $bytes;
-        $this->ptr = 0;
+        $this->resource = fopen($file, "rb");
     }
 
-    public static function fromFile(string $file): BinaryStream
+    public function __destruct()
     {
-        $filesize = filesize($file);
-        $fp = fopen($file, 'rb');
-        $binary = fread($fp, $filesize);
-        fclose($fp);
-
-        $unpacked = unpack(sprintf('C%d', $filesize), $binary);
-        $unpacked = array_values($unpacked);
-
-        return new BinaryStream($unpacked);
+        fclose($this->resource);
     }
 
-    /**
-     * @throws VpkException
-     */
     public function readInt32(): int
     {
         $value = 0;
@@ -39,9 +26,6 @@ class BinaryStream
         return $value;
     }
 
-    /**
-     * @throws VpkException
-     */
     public function readInt16(): int
     {
         $value = 0;
@@ -52,9 +36,6 @@ class BinaryStream
         return $value;
     }
 
-    /**
-     * @throws VpkException
-     */
     public function readString(): string
     {
         $chars = [];
@@ -70,15 +51,8 @@ class BinaryStream
         return implode(array_map("chr", $chars));
     }
 
-    /**
-     * @throws VpkException
-     */
-    public function readByte()
+    public function readByte(): false|string
     {
-        if ($this->ptr >= count($this->data)) {
-            throw new VpkException("Buffer Overflow.");
-        }
-
-        return $this->data[$this->ptr++];
+        return ord(fgets($this->resource, 2));
     }
 }

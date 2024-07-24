@@ -61,7 +61,7 @@ final class VpkArchive
         $this->vpkDir = dirname($filePath);
         $this->vpkName = basename($filePath);
 
-        $this->stream = BinaryStream::fromFile($filePath);
+        $this->stream = new BinaryStream($filePath);
         $sig = $this->stream->readInt32();
 
         if ($sig != self::SIGNATURE) {

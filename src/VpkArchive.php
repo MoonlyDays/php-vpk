@@ -100,7 +100,7 @@ final class VpkArchive
                         break;
                     }
 
-                    $entry = new VPKEntry($fileDir, $fileName, $fileExt);
+                    $entry = new VpkEntry($fileDir, $fileName, $fileExt);
                     $entry->CRC = $this->stream->readInt32();
                     $entry->PreloadBytes = $this->stream->readInt16();
                     $entry->ArchiveIndex = $this->stream->readInt16();
@@ -147,7 +147,7 @@ final class VpkArchive
         return $archive;
     }
 
-    protected function extractEntry(VPKEntry $entry, string $targetDir): bool
+    protected function extractEntry(VpkEntry $entry, string $targetDir): bool
     {
         $absFilePath = $targetDir.'/'.$entry->path;
         if (file_exists($absFilePath)) {

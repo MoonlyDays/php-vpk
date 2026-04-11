@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace MoonlyDays\VPK;
 
 class BinaryStream
@@ -8,7 +10,7 @@ class BinaryStream
 
     public function __construct(string $file)
     {
-        $this->resource = fopen($file, "rb");
+        $this->resource = fopen($file, 'rb');
     }
 
     public function __destruct()
@@ -41,17 +43,17 @@ class BinaryStream
         $chars = [];
         do {
             $char = $this->readByte();
-            if ($char == 0) {
+            if ($char === 0) {
                 break;
             }
 
             $chars[] = $char;
         } while (true);
 
-        return implode(array_map("chr", $chars));
+        return implode(array_map('chr', $chars));
     }
 
-    public function readByte(): false|string
+    public function readByte(): int
     {
         return ord(fgets($this->resource, 2));
     }

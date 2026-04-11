@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace MoonlyDays\VPK;
 
 final class VpkEntry
@@ -11,24 +13,6 @@ final class VpkEntry
     public string $directory = '';
 
     public string $name;
-
-    public function __construct(string $dir, string $name, string $ext)
-    {
-        $filePath = $name;
-        $this->name = $name;
-
-        if ($ext != ' ') {
-            $this->extension = $ext;
-            $filePath .= '.'.$ext;
-        }
-
-        if ($dir != ' ') {
-            $this->directory = $dir;
-            $filePath = $dir.'/'.$filePath;
-        }
-
-        $this->path = $filePath;
-    }
 
     /** @var int A 32bit CRC of the file's data. */
     public int $CRC;
@@ -47,5 +31,21 @@ final class VpkEntry
 
     public int $Terminator;
 
-    const TERMINATOR = 0xFFFF;
+    public function __construct(string $dir, string $name, string $ext)
+    {
+        $filePath = $name;
+        $this->name = $name;
+
+        if ($ext !== ' ') {
+            $this->extension = $ext;
+            $filePath .= '.' . $ext;
+        }
+
+        if ($dir !== ' ') {
+            $this->directory = $dir;
+            $filePath = $dir . '/' . $filePath;
+        }
+
+        $this->path = $filePath;
+    }
 }

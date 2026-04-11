@@ -1,55 +1,57 @@
 <?php
 
+declare(strict_types=1);
+
 namespace MoonlyDays\VPK;
 
 use Exception;
 
 final class VpkArchive
 {
-    protected const SIGNATURE = 0x55AA1234;
+    private const SIGNATURE = 0x55AA1234;
 
-    protected int $Version = 0;
+    private int $version = 0;
 
     /**
      * The size, in bytes, of the directory tree
      */
-    protected int $TreeSize = 0;
+    private int $treeSize = 0;
 
     /**
      * How many bytes of file content are stored in this VPK file (0 in CSGO)
      */
-    protected int $FileDataSectionSize = 0;
+    private int $fileDataSectionSize = 0;
 
     /**
      * The size, in bytes, of the section containing MD5 checksums for external archive content
      */
-    protected int $ArchiveMD5SectionSize = 0;
+    private int $archiveMD5SectionSize = 0;
 
     /**
      * The size, in bytes, of the section containing MD5 checksums for content in this file (should always be 48)
      */
-    protected int $OtherMD5SectionSize = 0;
+    private int $otherMD5SectionSize = 0;
 
     /**
      * The size, in bytes, of the section containing the public key and signature. This is either 0 (CSGO & The Ship) or 296 (HL2, HL2:DM, HL2:EP1, HL2:EP2, HL2:LC, TF2, DOD:S & CS:S)
      */
-    protected int $SignatureSectionSize = 0;
+    private int $signatureSectionSize = 0;
 
-    protected BinaryStream $stream;
+    private BinaryStream $stream;
 
-    protected string $vpkPath;
+    private string $vpkPath;
 
-    protected string $vpkDir;
+    private string $vpkDir;
 
-    protected string $vpkName;
+    private string $vpkName;
 
-    protected array $entries = [];
+    private array $entries = [];
 
-    protected array $entryByPath = [];
+    private array $entryByPath = [];
 
-    protected array $files = [];
+    private array $files = [];
 
-    protected array $archives = [];
+    private array $archives = [];
 
     /**
      * @throws VpkException
@@ -64,39 +66,39 @@ final class VpkArchive
         $this->stream = new BinaryStream($filePath);
         $sig = $this->stream->readInt32();
 
-        if ($sig != self::SIGNATURE) {
+        if ($sig !== self::SIGNATURE) {
             throw new VpkException('Invalid Header Signature');
         }
 
-        $this->Version = $this->stream->readInt32();
+        $this->version = $this->stream->readInt32();
 
         // only read this for VPKs of version 2.0
-        if ($this->Version >= 1) {
-            $this->TreeSize = $this->stream->readInt32();
+        if ($this->version >= 1) {
+            $this->treeSize = $this->stream->readInt32();
         }
 
-        if ($this->Version >= 2) {
-            $this->FileDataSectionSize = $this->stream->readInt32();
-            $this->ArchiveMD5SectionSize = $this->stream->readInt32();
-            $this->OtherMD5SectionSize = $this->stream->readInt32();
-            $this->SignatureSectionSize = $this->stream->readInt32();
+        if ($this->version >= 2) {
+            $this->fileDataSectionSize = $this->stream->readInt32();
+            $this->archiveMD5SectionSize = $this->stream->readInt32();
+            $this->otherMD5SectionSize = $this->stream->readInt32();
+            $this->signatureSectionSize = $this->stream->readInt32();
         }
 
         while (true) {
             $fileExt = $this->stream->readString();
-            if ($fileExt == '') {
+            if ($fileExt === '') {
                 break;
             }
 
             while (true) {
                 $fileDir = $this->stream->readString();
-                if ($fileDir == '') {
+                if ($fileDir === '') {
                     break;
                 }
 
                 while (true) {
                     $fileName = $this->stream->readString();
-                    if ($fileName == '') {
+                    if ($fileName === '') {
                         break;
                     }
 
@@ -114,61 +116,6 @@ final class VpkArchive
                 }
             }
         }
-    }
-
-    /**
-     * @return false|mixed|resource|null
-     */
-    private function openArchive(int $idx)
-    {
-        $archive = $this->archives[$idx] ?? null;
-        if ($archive === false) {
-            return null;
-        }
-
-        if (!empty($archive)) {
-            return $archive;
-        }
-
-        // substr the _dir.vpk part.
-        $archiveName = substr($this->vpkName, 0, -7);
-        $archiveName = sprintf('%s%03d.vpk', $archiveName, $idx);
-        $archivePath = $this->vpkDir.'/'.$archiveName;
-        if (!file_exists($archivePath)) {
-            // Archive is not present, mark as not available.
-            $this->archives[$idx] = false;
-
-            return null;
-        }
-
-        $archive = fopen($archivePath, 'rb');
-        $this->archives[$idx] = $archive;
-
-        return $archive;
-    }
-
-    protected function extractEntry(VpkEntry $entry, string $targetDir): bool
-    {
-        $absFilePath = $targetDir.'/'.$entry->path;
-        if (file_exists($absFilePath)) {
-            return true;
-        }
-
-        $archive = $this->openArchive($entry->ArchiveIndex);
-        if (empty($archive)) {
-            return false;
-        }
-
-        $absFileDir = dirname($absFilePath);
-        fseek($archive, $entry->EntryOffset);
-        $data = fread($archive, $entry->EntryLength);
-        if (!is_dir($absFileDir)) {
-            mkdir($absFileDir, 0777, true);
-        }
-
-        file_put_contents($absFilePath, $data);
-
-        return true;
     }
 
     public function extractFileTo(string $path, string $targetDir): bool
@@ -206,5 +153,60 @@ final class VpkArchive
 
             fclose($archive);
         }
+    }
+
+    /**
+     * @return false|mixed|resource|null
+     */
+    private function openArchive(int $idx)
+    {
+        $archive = $this->archives[$idx] ?? null;
+        if ($archive === false) {
+            return null;
+        }
+
+        if (!empty($archive)) {
+            return $archive;
+        }
+
+        // substr the _dir.vpk part.
+        $archiveName = mb_substr($this->vpkName, 0, -7);
+        $archiveName = sprintf('%s%03d.vpk', $archiveName, $idx);
+        $archivePath = $this->vpkDir . '/' . $archiveName;
+        if (!file_exists($archivePath)) {
+            // Archive is not present, mark as not available.
+            $this->archives[$idx] = false;
+
+            return null;
+        }
+
+        $archive = fopen($archivePath, 'rb');
+        $this->archives[$idx] = $archive;
+
+        return $archive;
+    }
+
+    private function extractEntry(VpkEntry $entry, string $targetDir): bool
+    {
+        $absFilePath = $targetDir . '/' . $entry->path;
+        if (file_exists($absFilePath)) {
+            return true;
+        }
+
+        $archive = $this->openArchive($entry->ArchiveIndex);
+        if (empty($archive)) {
+            return false;
+        }
+
+        $absFileDir = dirname($absFilePath);
+        fseek($archive, $entry->EntryOffset);
+        $data = fread($archive, $entry->EntryLength);
+        if (!is_dir($absFileDir)) {
+            mkdir($absFileDir, 0777, true);
+        }
+
+        file_put_contents($absFilePath, $data);
+
+        return true;
     }
 }

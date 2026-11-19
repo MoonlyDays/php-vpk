@@ -42,6 +42,21 @@ $archive->extractTo(__DIR__ . '/out', fn (VpkEntry $entry) => $entry->extension 
 $archive->close();
 ```
 
+### Extracting to Flysystem or a Laravel disk
+
+`extractTo()` and `extractFileTo()` also accept a [Flysystem](https://flysystem.thephpleague.com) filesystem, so you can extract straight to S3, SFTP, an in-memory filesystem, or any Laravel disk. Install `league/flysystem` (version 3) to use it; the library works without it.
+
+```php
+// Any Flysystem filesystem
+$archive->extractTo($filesystem);
+
+// A Laravel disk: pass its underlying Flysystem driver
+$archive->extractTo(Storage::disk('s3')->getDriver());
+$archive->extractFileTo('materials/logo.vtf', Storage::disk('public')->getDriver(), overwrite: true);
+```
+
+Files keep their archive paths, relative to the filesystem's root. To extract under a folder, use a disk whose root (or `prefix`) points there. Flysystem errors are rethrown as a `VpkException`, with the original exception as its `previous`.
+
 ### How VPK files are laid out
 
 A VPK archive is split across multiple files on disk:
@@ -95,9 +110,9 @@ Methods that take an entry accept either an in-archive path (`string`) or a `Vpk
 
 | Method | Description |
 | --- | --- |
-| `extractFileTo($entry, string $targetDir, bool $overwrite = false): void` | Extract one file into `$targetDir`, preserving its archive path. Refuses paths that would escape `$targetDir`. |
+| `extractFileTo($entry, string\|FilesystemOperator $target, bool $overwrite = false): void` | Extract one file into a directory or Flysystem filesystem, preserving its archive path. Refuses paths that would escape the target. |
 | `extractFileAs($entry, string $destination, bool $overwrite = false): void` | Extract one file to an explicit file path. |
-| `extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int` | Extract every file (or those accepted by `$filter`). Returns the number of files extracted or already present. |
+| `extractTo(string\|FilesystemOperator $target, ?callable $filter = null, bool $overwrite = false): int` | Extract every file (or those accepted by `$filter`) into a directory or Flysystem filesystem. Returns the number of files extracted or already present. |
 | `close(): void` | Close cached chunk-file handles. Safe to call repeatedly; handles are reopened on demand. |
 
 Reading and extraction methods throw a `VpkException` when the path is unknown, its chunk file is missing, its data is truncated, or the destination can't be written; `extractTo` stops at the first failure. Files that already exist on disk are left untouched unless `$overwrite` is `true`.

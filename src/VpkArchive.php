@@ -7,6 +7,8 @@ namespace MoonlyDays\VPK;
 use Countable;
 use Generator;
 use IteratorAggregate;
+use League\Flysystem\FilesystemException;
+use League\Flysystem\FilesystemOperator;
 
 /**
  * A (source, offset, length) byte range of an entry's data.
@@ -375,19 +377,26 @@ final class VpkArchive implements Countable, IteratorAggregate
     }
 
     /**
-     * Extract a single file into $targetDir, preserving its archive path.
+     * Extract a single file into $target, preserving its archive path. $target is a local
+     * directory or a Flysystem filesystem (such as a Laravel disk's getDriver()).
      * Does nothing when the file already exists, unless $overwrite is true.
      *
      * @throws VpkException
      */
-    public function extractFileTo(string|VpkEntry $path, string $targetDir, bool $overwrite = false): void
+    public function extractFileTo(string|VpkEntry $path, string|FilesystemOperator $target, bool $overwrite = false): void
     {
         $entry = $this->resolve($path);
         if (! VpkEntry::isSafePath($entry->path)) {
             throw VpkException::unsafePath($entry->path);
         }
 
-        $this->extractEntry($entry, $targetDir.'/'.$entry->path, $overwrite);
+        if ($target instanceof FilesystemOperator) {
+            $this->writeEntry($entry, $target, $overwrite);
+
+            return;
+        }
+
+        $this->extractEntry($entry, $target.'/'.$entry->path, $overwrite);
     }
 
     /**
@@ -402,22 +411,22 @@ final class VpkArchive implements Countable, IteratorAggregate
     }
 
     /**
-     * Extract every entry (optionally only those accepted by $filter) into $targetDir.
+     * Extract every entry (optionally only those accepted by $filter) into $target.
      *
-     * @param  string  $targetDir  directory to extract into; created on demand
+     * @param  string|FilesystemOperator  $target  local directory (created on demand) or Flysystem filesystem
      * @param  (callable(VpkEntry): bool)|null  $filter
-     * @param  bool  $overwrite  re-extract files that already exist on disk
+     * @param  bool  $overwrite  re-extract files that already exist
      * @return int number of files extracted (or already present)
      *
      * @throws VpkException on the first entry that fails to extract
      */
-    public function extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int
+    public function extractTo(string|FilesystemOperator $target, ?callable $filter = null, bool $overwrite = false): int
     {
         $entries = $filter === null ? $this->getIterator() : $this->filter($filter);
 
         $extracted = 0;
         foreach ($entries as $entry) {
-            $this->extractFileTo($entry, $targetDir, $overwrite);
+            $this->extractFileTo($entry, $target, $overwrite);
             $extracted++;
         }
 
@@ -635,5 +644,31 @@ final class VpkArchive implements Countable, IteratorAggregate
         $segments = $this->segments($entry);
 
         Filesystem::writeFile($file, fn (mixed $handle) => $this->copySegments($entry, $segments, $handle));
+    }
+
+    /**
+     * Write an entry into a Flysystem filesystem at its archive path.
+     *
+     * @throws VpkException
+     */
+    private function writeEntry(VpkEntry $entry, FilesystemOperator $filesystem, bool $overwrite): void
+    {
+        try {
+            if (! $overwrite && $filesystem->fileExists($entry->path)) {
+                return;
+            }
+
+            $stream = $this->stream($entry);
+
+            try {
+                $filesystem->writeStream($entry->path, $stream);
+            } finally {
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            }
+        } catch (FilesystemException $filesystemException) {
+            throw VpkException::flysystemFailed($entry->path, $filesystemException);
+        }
     }
 }

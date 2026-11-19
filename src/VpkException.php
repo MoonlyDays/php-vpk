@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace MoonlyDays\VPK;
 
 use Exception;
+use Throwable;
 
 /**
  * Every failure in the library is raised through one of these named constructors,
@@ -88,5 +89,10 @@ class VpkException extends Exception
     public static function renameFailed(string $from, string $to, string $reason): self
     {
         return new self(sprintf('Unable to move "%s" to "%s": %s.', $from, $to, $reason));
+    }
+
+    public static function flysystemFailed(string $path, Throwable $previous): self
+    {
+        return new self(sprintf('Unable to extract "%s" to the filesystem: %s', $path, $previous->getMessage()), 0, $previous);
     }
 }

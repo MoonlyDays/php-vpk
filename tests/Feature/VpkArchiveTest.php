@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+use League\Flysystem\Config;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
+use League\Flysystem\UnableToWriteFile;
 use MoonlyDays\VPK\VpkArchive;
 use MoonlyDays\VPK\VpkException;
 use Tests\Support\VpkFactory;
@@ -255,4 +259,34 @@ it('reports why the destination directory cannot be created', function (): void 
 
     expect(fn () => $archive->extractFileAs('f.txt', $this->tempDir.'/blocker/f.txt'))
         ->toThrow(VpkException::class, 'Unable to create directory');
+});
+
+it('extracts into a Flysystem filesystem', function (): void {
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir.'/vpk', [
+        ['path' => 'a/one.txt', 'data' => 'ONE', 'preload' => 2],
+        ['path' => 'b/two.txt', 'data' => 'TWO', 'inline' => true],
+    ]));
+    $disk = new Filesystem(new LocalFilesystemAdapter($this->tempDir.'/disk'));
+    $disk->write('b/two.txt', 'old');
+
+    expect($archive->extractTo($disk))->toBe(2)
+        ->and($disk->read('a/one.txt'))->toBe('ONE')
+        ->and($disk->read('b/two.txt'))->toBe('old');
+
+    $archive->extractFileTo('b/two.txt', $disk, overwrite: true);
+    expect($disk->read('b/two.txt'))->toBe('TWO');
+});
+
+it('wraps Flysystem failures in a VpkException', function (): void {
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir.'/vpk', [['path' => 'a/one.txt', 'data' => 'ONE']]));
+    $disk = new Filesystem(new class($this->tempDir.'/disk') extends LocalFilesystemAdapter
+    {
+        public function writeStream(string $path, $contents, Config $config): void
+        {
+            throw UnableToWriteFile::atLocation($path, 'disk is full');
+        }
+    });
+
+    expect(fn (): int => $archive->extractTo($disk))
+        ->toThrow(VpkException::class, 'Unable to extract "a/one.txt" to the filesystem: Unable to write file at location: a/one.txt. disk is full');
 });

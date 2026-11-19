@@ -16,12 +16,11 @@ readonly class BinaryStream
      */
     public function __construct(string $file)
     {
-        $resource = @fopen($file, 'rb');
-        if ($resource === false) {
-            throw new VpkException(sprintf('Unable to open "%s" for reading.', $file));
+        if (! is_file($file)) {
+            throw VpkException::fileNotFound($file);
         }
 
-        $this->resource = $resource;
+        $this->resource = Filesystem::open($file, 'rb');
     }
 
     public function __destruct()
@@ -56,14 +55,21 @@ readonly class BinaryStream
     }
 
     /**
-     * Read a null-terminated string, consuming the terminator. Returns an
-     * empty string at end of file.
+     * Read a null-terminated string, consuming the terminator.
+     *
+     * @throws VpkException when the end of file is reached before the terminator
      */
     public function readString(): string
     {
+        $offset = $this->tell();
         $string = stream_get_line($this->resource, 0, "\0");
 
-        return $string === false ? '' : $string;
+        // A consumed terminator puts the position one byte past the string; at EOF it doesn't.
+        if ($string === false || $this->tell() !== $offset + self::byteLength($string) + 1) {
+            throw VpkException::unterminatedString($offset);
+        }
+
+        return $string;
     }
 
     /**
@@ -77,29 +83,42 @@ readonly class BinaryStream
             return '';
         }
 
-        $data = fread($this->resource, $length);
-        // '8bit' makes mb_strlen count bytes, not characters.
-        if ($data === false || mb_strlen($data, '8bit') !== $length) {
-            throw new VpkException('Unexpected end of file.');
+        $offset = $this->tell();
+        $data = (string) fread($this->resource, $length);
+        if (self::byteLength($data) !== $length) {
+            throw VpkException::unexpectedEof($offset, $length, self::byteLength($data));
         }
 
         return $data;
     }
 
+    /**
+     * @throws VpkException
+     */
     public function tell(): int
     {
-        return (int) ftell($this->resource);
+        $offset = ftell($this->resource);
+
+        return $offset === false ? throw VpkException::tellFailed() : $offset;
     }
 
+    /**
+     * @throws VpkException
+     */
     public function seek(int $offset): void
     {
-        fseek($this->resource, $offset);
+        if (fseek($this->resource, $offset) !== 0) {
+            throw VpkException::seekFailed($offset);
+        }
     }
 
+    /**
+     * @throws VpkException
+     */
     public function skip(int $length): void
     {
         if ($length > 0) {
-            fseek($this->resource, $length, SEEK_CUR);
+            $this->seek($this->tell() + $length);
         }
     }
 
@@ -109,5 +128,11 @@ readonly class BinaryStream
     public function resource(): mixed
     {
         return $this->resource;
+    }
+
+    private static function byteLength(string $data): int
+    {
+        // '8bit' makes mb_strlen count bytes, not characters.
+        return mb_strlen($data, '8bit');
     }
 }

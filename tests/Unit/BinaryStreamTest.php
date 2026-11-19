@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use MoonlyDays\VPK\BinaryStream;
+use MoonlyDays\VPK\VpkException;
 
 function writeTempBinary(string $bytes): string
 {
@@ -65,4 +66,23 @@ it('returns an empty string when the first byte is a null terminator', function 
 
     expect($stream->readString())->toBe('')
         ->and($stream->readString())->toBe('abc');
+});
+
+it('throws a descriptive exception when reading past the end of the file', function (): void {
+    $stream = new BinaryStream(writeTempBinary("\x01\x02"));
+
+    expect(fn (): int => $stream->readInt32())
+        ->toThrow(VpkException::class, 'Unexpected end of file at offset 0: expected 4 bytes, got 2.');
+});
+
+it('throws when a string runs into the end of the file', function (): void {
+    $stream = new BinaryStream(writeTempBinary("abc\0"));
+    $stream->readString();
+
+    expect(fn (): string => $stream->readString())->toThrow(VpkException::class, 'while reading a string');
+});
+
+it('throws when the file does not exist', function (): void {
+    expect(fn (): BinaryStream => new BinaryStream('/definitely/missing/file.vpk'))
+        ->toThrow(VpkException::class, 'File "/definitely/missing/file.vpk" does not exist.');
 });

@@ -11,6 +11,11 @@ final class VpkEntry
      */
     public const int DIRECTORY_ARCHIVE_INDEX = 0x7FFF;
 
+    /**
+     * On-disk stand-in for "root directory" or "no extension".
+     */
+    public const string BLANK = ' ';
+
     public string $path;
 
     public string $extension;
@@ -51,19 +56,51 @@ final class VpkEntry
 
     public function __construct(string $dir, public string $name, string $ext)
     {
-        $this->extension = $ext === ' ' ? '' : $ext;
-        $this->directory = $dir === ' ' ? '' : $dir;
+        $this->extension = self::normalizePart($ext);
+        $this->directory = self::normalizePart($dir);
         $this->path = self::joinPath($dir, $this->name, $ext);
     }
 
     /**
-     * Build "dir/name.ext" from on-disk values (' ' means root directory / no extension).
+     * Build "dir/name.ext" from on-disk values (BLANK means root directory / no extension).
      */
     public static function joinPath(string $dir, string $name, string $ext): string
     {
-        $path = $ext === ' ' ? $name : $name.'.'.$ext;
+        $path = $ext === self::BLANK ? $name : $name.'.'.$ext;
 
-        return $dir === ' ' ? $path : $dir.'/'.$path;
+        return $dir === self::BLANK ? $path : $dir.'/'.$path;
+    }
+
+    /**
+     * Whether $path is a plain relative path that cannot escape a target directory.
+     */
+    public static function isSafePath(string $path): bool
+    {
+        if ($path === '' || str_contains($path, ':') || str_contains($path, '\\') || str_contains($path, "\0")) {
+            return false;
+        }
+
+        return array_all(
+            explode('/', $path),
+            static fn (string $part): bool => ! in_array($part, ['', '.', '..'], true),
+        );
+    }
+
+    /**
+     * Map the on-disk BLANK marker to an empty string.
+     */
+    public static function normalizePart(string $value): string
+    {
+        return $value === self::BLANK ? '' : $value;
+    }
+
+    /**
+     * Canonical form for comparing archive paths: lowercase, forward slashes, no outer slashes.
+     * Matches the Source engine, which treats paths case-insensitively.
+     */
+    public static function normalizePath(string $path): string
+    {
+        return mb_strtolower(mb_trim(str_replace('\\', '/', $path), '/'));
     }
 
     /**
@@ -108,8 +145,8 @@ final class VpkEntry
      */
     public function isIn(string $directory, bool $recursive = false): bool
     {
-        $directory = mb_strtolower(mb_trim(str_replace('\\', '/', $directory), '/'));
-        $own = mb_strtolower($this->directory);
+        $directory = self::normalizePath($directory);
+        $own = self::normalizePath($this->directory);
 
         if ($own === $directory) {
             return true;

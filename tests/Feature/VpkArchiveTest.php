@@ -19,16 +19,18 @@ it('rejects a file whose header signature is not 0x55AA1234', function (): void 
     $path = $this->tempDir.'/bogus_dir.vpk';
     file_put_contents($path, pack('V', 0xDEADBEEF).pack('V', 1).pack('V', 0)."\0\0\0");
 
-    expect(fn (): VpkArchive => new VpkArchive($path))->toThrow(VpkException::class);
+    expect(fn (): VpkArchive => new VpkArchive($path))
+        ->toThrow(VpkException::class, 'expected 0x55AA1234, got 0xDEADBEEF');
 });
 
-it('returns false from extractFileTo for a path that is not in the archive', function (): void {
+it('throws from extractFileTo for a path that is not in the archive', function (): void {
     $dirPath = VpkFactory::create($this->tempDir, [
         ['path' => 'present.txt', 'data' => 'here'],
     ]);
     $archive = new VpkArchive($dirPath);
 
-    expect($archive->extractFileTo('definitely/not/in/the/archive.txt', $this->tempDir))->toBeFalse();
+    expect(fn () => $archive->extractFileTo('definitely/not/in/the/archive.txt', $this->tempDir))
+        ->toThrow(VpkException::class, 'Entry "definitely/not/in/the/archive.txt" does not exist');
 
     $archive->close();
 });
@@ -74,14 +76,15 @@ it('extracts a single named file via extractFileTo', function (): void {
     $outDir = $this->tempDir.'/out';
     mkdir($outDir, 0777, true);
 
-    expect($archive->extractFileTo('a/two.txt', $outDir))->toBeTrue()
-        ->and(file_get_contents($outDir.'/a/two.txt'))->toBe('TWO')
+    $archive->extractFileTo('a/two.txt', $outDir);
+
+    expect(file_get_contents($outDir.'/a/two.txt'))->toBe('TWO')
         ->and(file_exists($outDir.'/a/one.txt'))->toBeFalse();
 
     $archive->close();
 });
 
-it('silently skips extraction when the backing archive chunk is missing', function (): void {
+it('throws when the backing archive chunk is missing', function (): void {
     $files = [['path' => 'orphan.txt', 'data' => 'data']];
     $dirPath = VpkFactory::create($this->tempDir, $files);
 
@@ -94,8 +97,11 @@ it('silently skips extraction when the backing archive chunk is missing', functi
 
     $outDir = $this->tempDir.'/out';
     mkdir($outDir, 0777, true);
-    expect($archive->extractFileTo('orphan.txt', $outDir))->toBeFalse()
-        ->and(file_exists($outDir.'/orphan.txt'))->toBeFalse();
+    expect(fn () => $archive->extractFileTo('orphan.txt', $outDir))
+        ->toThrow(VpkException::class, 'archive chunk 000')
+        ->and(fn (): string => $archive->read('orphan.txt'))->toThrow(VpkException::class, 'archive chunk 000')
+        ->and(file_exists($outDir.'/orphan.txt'))->toBeFalse()
+        ->and(file_exists($outDir.'/orphan.txt.part'))->toBeFalse();
 
     $archive->close();
 });
@@ -138,14 +144,15 @@ it('reads, streams, and verifies entry contents', function (): void {
     ]));
 
     expect($archive->read('a.txt'))->toBe('alpha')
-        ->and($archive->read('missing.txt'))->toBeNull();
+        ->and(fn (): string => $archive->read('missing.txt'))->toThrow(VpkException::class, 'does not exist')
+        ->and(fn (): bool => $archive->verify('missing.txt'))->toThrow(VpkException::class, 'does not exist');
 
     $stream = $archive->stream('a.txt');
     expect(stream_get_contents($stream))->toBe('alpha');
     fclose($stream);
 
     $sink = fopen('php://memory', 'w+b');
-    expect($archive->writeTo('a.txt', $sink))->toBeTrue();
+    $archive->writeTo('a.txt', $sink);
     rewind($sink);
     expect(stream_get_contents($sink))->toBe('alpha')
         ->and($archive->verify('a.txt'))->toBeTrue();
@@ -189,8 +196,8 @@ it('extracts only filtered entries and to explicit destinations', function (): v
         ->and(file_exists($outDir.'/a/skip.txt'))->toBeFalse();
 
     $dest = $this->tempDir.'/renamed/file.bin';
-    expect($archive->extractFileAs('a/skip.txt', $dest))->toBeTrue()
-        ->and(file_get_contents($dest))->toBe('S');
+    $archive->extractFileAs('a/skip.txt', $dest);
+    expect(file_get_contents($dest))->toBe('S');
 });
 
 it('skips existing files unless overwrite is requested', function (): void {
@@ -210,7 +217,8 @@ it('skips existing files unless overwrite is requested', function (): void {
 it('refuses to extract entries that would escape the target directory', function (): void {
     $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir.'/vpk', [['path' => '../evil.txt', 'data' => 'x']]));
 
-    expect($archive->extractFileTo('../evil.txt', $this->tempDir.'/out'))->toBeFalse()
+    expect(fn () => $archive->extractFileTo('../evil.txt', $this->tempDir.'/out'))
+        ->toThrow(VpkException::class, 'would escape the target directory')
         ->and(file_exists($this->tempDir.'/evil.txt'))->toBeFalse();
 });
 
@@ -222,4 +230,29 @@ it('can be closed repeatedly and still extract afterwards', function (): void {
     $archive->close();
 
     expect($archive->read('f.txt'))->toBe('data');
+});
+
+it('throws when an archive chunk is shorter than the entry claims', function (): void {
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [['path' => 'f.txt', 'data' => 'data']]));
+    file_put_contents($this->tempDir.'/test_000.vpk', 'da');
+
+    expect(fn (): string => $archive->read('f.txt'))
+        ->toThrow(VpkException::class, 'Data for "f.txt" is truncated: expected 4 bytes at offset 0, got 2.')
+        ->and(fn (): bool => $archive->verify('f.txt'))->toThrow(VpkException::class, 'truncated');
+});
+
+it('throws when the directory tree is truncated', function (): void {
+    $path = $this->tempDir.'/short_dir.vpk';
+    file_put_contents($path, pack('V', VpkArchive::SIGNATURE).pack('V', 1).pack('V', 0).'txt');
+
+    expect(fn (): VpkArchive => new VpkArchive($path))->toThrow(VpkException::class, 'Unexpected end of file');
+});
+
+it('reports why the destination directory cannot be created', function (): void {
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [['path' => 'f.txt', 'data' => 'data']]));
+    // A regular file where the target directory should be.
+    file_put_contents($this->tempDir.'/blocker', '');
+
+    expect(fn () => $archive->extractFileAs('f.txt', $this->tempDir.'/blocker/f.txt'))
+        ->toThrow(VpkException::class, 'Unable to create directory');
 });

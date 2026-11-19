@@ -86,21 +86,21 @@ Methods that take an entry accept either an in-archive path (`string`) or a `Vpk
 
 | Method | Description |
 | --- | --- |
-| `read($entry): ?string` | Full contents as a string. Convenient for small files. |
-| `stream($entry): ?resource` | A rewound, readable `php://temp` stream with the contents. The caller should `fclose` it. |
-| `writeTo($entry, resource $destination): bool` | Stream the contents into an open, writable stream without buffering them in memory. |
-| `verify($entry): bool` | Check the contents against the stored CRC32. |
+| `read($entry): string` | Full contents as a string. Convenient for small files. |
+| `stream($entry): resource` | A rewound, readable `php://temp` stream with the contents. The caller should `fclose` it. |
+| `writeTo($entry, resource $destination): void` | Stream the contents into an open, writable stream without buffering them in memory. |
+| `verify($entry): bool` | Check the contents against the stored CRC32. Returns `false` on a mismatch. |
 
 **Extracting**
 
 | Method | Description |
 | --- | --- |
-| `extractFileTo($entry, string $targetDir, bool $overwrite = false): bool` | Extract one file into `$targetDir`, preserving its archive path. Refuses paths that would escape `$targetDir`. |
-| `extractFileAs($entry, string $destination, bool $overwrite = false): bool` | Extract one file to an explicit file path. |
+| `extractFileTo($entry, string $targetDir, bool $overwrite = false): void` | Extract one file into `$targetDir`, preserving its archive path. Refuses paths that would escape `$targetDir`. |
+| `extractFileAs($entry, string $destination, bool $overwrite = false): void` | Extract one file to an explicit file path. |
 | `extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int` | Extract every file (or those accepted by `$filter`). Returns the number of files extracted or already present. |
 | `close(): void` | Close cached chunk-file handles. Safe to call repeatedly; handles are reopened on demand. |
 
-Extraction methods return `false` (or skip the file) when the path is unknown or its chunk file is missing. Files that already exist on disk are left untouched unless `$overwrite` is `true`.
+Reading and extraction methods throw a `VpkException` when the path is unknown, its chunk file is missing, its data is truncated, or the destination can't be written; `extractTo` stops at the first failure. Files that already exist on disk are left untouched unless `$overwrite` is `true`.
 
 ### `MoonlyDays\VPK\VpkEntry`
 
@@ -117,7 +117,7 @@ A single file record. Public properties: `path`, `directory`, `name`, `extension
 
 ### `MoonlyDays\VPK\VpkException`
 
-Thrown when a `_dir.vpk` can't be opened, has an invalid header signature, or ends unexpectedly.
+Thrown with a descriptive message when a `_dir.vpk` can't be opened, has an invalid header signature or ends unexpectedly, and when reading or extracting an entry fails (unknown path, missing or truncated chunk, unwritable destination, or a path that would escape the target directory).
 
 ## Development
 

@@ -9,6 +9,10 @@ use Generator;
 use IteratorAggregate;
 
 /**
+ * A (source, offset, length) byte range of an entry's data.
+ *
+ * @phpstan-type Segment array{0: resource, 1: int, 2: int}
+ *
  * @implements IteratorAggregate<string, VpkEntry>
  */
 final class VpkArchive implements Countable, IteratorAggregate
@@ -16,17 +20,25 @@ final class VpkArchive implements Countable, IteratorAggregate
     public const int SIGNATURE = 0x55AA1234;
 
     /**
-     * Record layout: dirId, extId, preloadOffset, the 18-byte entry metadata, then the file name.
+     * Entry metadata that follows each file name in the directory tree.
      */
-    private const string RECORD_FORMAT = 'VdirId/VextId/VpreloadOffset/VCRC/vPreloadBytes/vArchiveIndex/VEntryOffset/VEntryLength/vTerminator';
+    private const string METADATA_FORMAT = 'VCRC/vPreloadBytes/vArchiveIndex/VEntryOffset/VEntryLength/vTerminator';
 
-    private const int RECORD_NAME_OFFSET = 30;
+    private const int METADATA_LENGTH = 18;
+
+    /**
+     * In-memory record: dirId, extId and preloadOffset (4 bytes each), the raw metadata, then the file name.
+     */
+    private const string RECORD_FORMAT = 'VdirId/VextId/VpreloadOffset/'.self::METADATA_FORMAT;
+
+    private const int RECORD_NAME_OFFSET = 12 + self::METADATA_LENGTH;
+
+    /**
+     * Length of the "dir.vpk" suffix that is swapped for "NNN.vpk" to name a chunk file.
+     */
+    private const int DIR_SUFFIX_LENGTH = 7;
 
     private readonly BinaryStream $stream;
-
-    private readonly string $vpkDir;
-
-    private readonly string $vpkName;
 
     private int $version;
 
@@ -83,11 +95,11 @@ final class VpkArchive implements Countable, IteratorAggregate
     private array $records = [];
 
     /**
-     * Lazily opened chunk handles; false marks a chunk known to be missing.
+     * Lazily opened chunk handles, keyed by ArchiveIndex; false marks a chunk known to be missing.
      *
      * @var array<int, resource|false>
      */
-    private array $archives = [];
+    private array $chunks = [];
 
     /**
      * @throws VpkException
@@ -95,9 +107,6 @@ final class VpkArchive implements Countable, IteratorAggregate
     public function __construct(
         private readonly string $vpkPath
     ) {
-        $this->vpkDir = dirname($this->vpkPath);
-        $this->vpkName = basename($this->vpkPath);
-
         $this->stream = new BinaryStream($this->vpkPath);
         $this->readHeader();
         $this->readTree();
@@ -116,6 +125,18 @@ final class VpkArchive implements Countable, IteratorAggregate
     public static function fromPath(string $vpkPath): self
     {
         return new self($vpkPath);
+    }
+
+    /**
+     * "<name>_dir.vpk" → "<name>_NNN.vpk".
+     *
+     * @internal
+     */
+    public static function chunkPath(string $dirPath, int $index): string
+    {
+        $prefix = mb_substr(basename($dirPath), 0, -self::DIR_SUFFIX_LENGTH);
+
+        return sprintf('%s/%s%03d.vpk', dirname($dirPath), $prefix, $index);
     }
 
     public function path(): string
@@ -174,12 +195,12 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function has(string $path): bool
     {
-        return isset($this->records[self::normalizePath($path)]);
+        return isset($this->records[VpkEntry::normalizePath($path)]);
     }
 
     public function entry(string $path): ?VpkEntry
     {
-        $record = $this->records[self::normalizePath($path)] ?? null;
+        $record = $this->records[VpkEntry::normalizePath($path)] ?? null;
 
         return $record === null ? null : $this->createEntry($record);
     }
@@ -208,10 +229,7 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function directories(): array
     {
-        return array_values(array_unique(array_map(
-            static fn (string $directory): string => $directory === ' ' ? '' : $directory,
-            $this->dirs,
-        )));
+        return array_values(array_unique(array_map(VpkEntry::normalizePart(...), $this->dirs)));
     }
 
     /**
@@ -223,7 +241,7 @@ final class VpkArchive implements Countable, IteratorAggregate
     {
         return array_values(array_unique(array_filter(
             $this->exts,
-            static fn (string $ext): bool => $ext !== ' ' && $ext !== '',
+            static fn (string $ext): bool => $ext !== VpkEntry::BLANK,
         )));
     }
 
@@ -245,9 +263,9 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function find(string $pattern): array
     {
-        $pattern = self::normalizePath($pattern);
+        $pattern = VpkEntry::normalizePath($pattern);
 
-        return $this->filter(static fn (VpkEntry $entry): bool => fnmatch($pattern, mb_strtolower($entry->path)));
+        return $this->filter(static fn (VpkEntry $entry): bool => fnmatch($pattern, VpkEntry::normalizePath($entry->path)));
     }
 
     /**
@@ -273,8 +291,8 @@ final class VpkArchive implements Countable, IteratorAggregate
     {
         $total = 0;
         foreach ($this->records as $record) {
-            // PreloadBytes (v) at byte 16, EntryLength (V) at byte 24.
-            $total += unpack('v', $record, 16)[1] + unpack('V', $record, 24)[1];
+            $data = unpack(self::RECORD_FORMAT, $record);
+            $total += $data['PreloadBytes'] + $data['EntryLength'];
         }
 
         return $total;
@@ -284,39 +302,34 @@ final class VpkArchive implements Countable, IteratorAggregate
      * Copy an entry's contents into an open, writable stream without buffering it in PHP memory.
      *
      * @param  resource  $destination
+     *
+     * @throws VpkException when the entry does not exist, its chunk is missing, or its data is truncated
      */
-    public function writeTo(string|VpkEntry $entry, mixed $destination): bool
+    public function writeTo(string|VpkEntry $entry, mixed $destination): void
     {
         $entry = $this->resolve($entry);
-        if (! $entry instanceof VpkEntry) {
-            return false;
-        }
 
-        $segments = $this->segments($entry);
-        if ($segments === null) {
-            return false;
-        }
-
-        return $this->copySegments($segments, $destination);
+        $this->copySegments($entry, $this->segments($entry), $destination);
     }
 
     /**
      * Open an entry as a readable, rewound stream. Small files stay in memory; anything above
      * 2 MB is spilled to a temp file by php://temp. The caller owns (and should fclose) the stream.
      *
-     * @return resource|null
+     * @return resource
+     *
+     * @throws VpkException
      */
     public function stream(string|VpkEntry $entry): mixed
     {
-        $stream = fopen('php://temp', 'w+b');
-        if ($stream === false) {
-            return null;
-        }
+        $stream = Filesystem::open('php://temp', 'w+b');
 
-        if (! $this->writeTo($entry, $stream)) {
+        try {
+            $this->writeTo($entry, $stream);
+        } catch (VpkException $vpkException) {
             fclose($stream);
 
-            return null;
+            throw $vpkException;
         }
 
         rewind($stream);
@@ -327,70 +340,65 @@ final class VpkArchive implements Countable, IteratorAggregate
     /**
      * Read an entry's full contents into a string. Convenient for small files; prefer
      * stream()/writeTo()/extract*() for large ones.
+     *
+     * @throws VpkException
      */
-    public function read(string|VpkEntry $entry): ?string
+    public function read(string|VpkEntry $entry): string
     {
         $stream = $this->stream($entry);
-        if ($stream === null) {
-            return null;
+
+        try {
+            return (string) stream_get_contents($stream);
+        } finally {
+            fclose($stream);
         }
-
-        $contents = stream_get_contents($stream);
-        fclose($stream);
-
-        return $contents === false ? null : $contents;
     }
 
     /**
      * Check an entry's data against its stored CRC32. Streams the data; nothing is buffered.
+     * Returns false on a CRC mismatch.
+     *
+     * @throws VpkException when the entry does not exist, its chunk is missing, or its data is truncated
      */
     public function verify(string|VpkEntry $entry): bool
     {
         $entry = $this->resolve($entry);
-        if (! $entry instanceof VpkEntry) {
-            return false;
-        }
-
-        $segments = $this->segments($entry);
-        if ($segments === null) {
-            return false;
-        }
-
         $context = hash_init('crc32b');
-        foreach ($segments as [$source, $offset, $length]) {
-            fseek($source, $offset);
-            if (hash_update_stream($context, $source, $length) !== $length) {
-                return false;
-            }
-        }
+
+        $this->readSegments(
+            $entry,
+            $this->segments($entry),
+            static fn (mixed $source, int $length): int => hash_update_stream($context, $source, $length),
+        );
 
         return hash_final($context) === $entry->crcHex();
     }
 
     /**
      * Extract a single file into $targetDir, preserving its archive path.
+     * Does nothing when the file already exists, unless $overwrite is true.
+     *
+     * @throws VpkException
      */
-    public function extractFileTo(string|VpkEntry $path, string $targetDir, bool $overwrite = false): bool
+    public function extractFileTo(string|VpkEntry $path, string $targetDir, bool $overwrite = false): void
     {
         $entry = $this->resolve($path);
-        if (! $entry instanceof VpkEntry || ! self::isSafePath($entry->path)) {
-            return false;
+        if (! VpkEntry::isSafePath($entry->path)) {
+            throw VpkException::unsafePath($entry->path);
         }
 
-        return $this->extractEntry($entry, $targetDir.'/'.$entry->path, $overwrite);
+        $this->extractEntry($entry, $targetDir.'/'.$entry->path, $overwrite);
     }
 
     /**
      * Extract a single file to an explicit destination file path.
+     * Does nothing when the file already exists, unless $overwrite is true.
+     *
+     * @throws VpkException
      */
-    public function extractFileAs(string|VpkEntry $path, string $destination, bool $overwrite = false): bool
+    public function extractFileAs(string|VpkEntry $path, string $destination, bool $overwrite = false): void
     {
-        $entry = $this->resolve($path);
-        if (! $entry instanceof VpkEntry) {
-            return false;
-        }
-
-        return $this->extractEntry($entry, $destination, $overwrite);
+        $this->extractEntry($this->resolve($path), $destination, $overwrite);
     }
 
     /**
@@ -399,19 +407,18 @@ final class VpkArchive implements Countable, IteratorAggregate
      * @param  string  $targetDir  directory to extract into; created on demand
      * @param  (callable(VpkEntry): bool)|null  $filter
      * @param  bool  $overwrite  re-extract files that already exist on disk
-     * @return int number of files successfully extracted (or already present)
+     * @return int number of files extracted (or already present)
+     *
+     * @throws VpkException on the first entry that fails to extract
      */
     public function extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int
     {
-        $extracted = 0;
-        foreach ($this->getIterator() as $entry) {
-            if ($filter !== null && ! $filter($entry)) {
-                continue;
-            }
+        $entries = $filter === null ? $this->getIterator() : $this->filter($filter);
 
-            if ($this->extractFileTo($entry, $targetDir, $overwrite)) {
-                $extracted++;
-            }
+        $extracted = 0;
+        foreach ($entries as $entry) {
+            $this->extractFileTo($entry, $targetDir, $overwrite);
+            $extracted++;
         }
 
         return $extracted;
@@ -422,30 +429,13 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function close(): void
     {
-        foreach ($this->archives as $archive) {
-            if (is_resource($archive)) {
-                fclose($archive);
+        foreach ($this->chunks as $chunk) {
+            if (is_resource($chunk)) {
+                fclose($chunk);
             }
         }
 
-        $this->archives = [];
-    }
-
-    private static function normalizePath(string $path): string
-    {
-        return mb_strtolower(mb_ltrim(str_replace('\\', '/', $path), '/'));
-    }
-
-    /**
-     * Reject paths that could escape the extraction directory.
-     */
-    private static function isSafePath(string $path): bool
-    {
-        if ($path === '' || str_starts_with($path, '/') || str_contains($path, ':') || str_contains($path, '\\')) {
-            return false;
-        }
-
-        return ! in_array('..', explode('/', $path), true);
+        $this->chunks = [];
     }
 
     /**
@@ -453,8 +443,9 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     private function readHeader(): void
     {
-        if ($this->stream->readInt32() !== self::SIGNATURE) {
-            throw new VpkException('Invalid Header Signature');
+        $signature = $this->stream->readInt32();
+        if ($signature !== self::SIGNATURE) {
+            throw VpkException::invalidSignature($this->vpkPath, $signature);
         }
 
         $this->version = $this->stream->readInt32();
@@ -472,6 +463,8 @@ final class VpkArchive implements Countable, IteratorAggregate
     }
 
     /**
+     * Walk the extension → directory → file name tree; an empty string ends each level.
+     *
      * @throws VpkException
      */
     private function readTree(): void
@@ -479,28 +472,23 @@ final class VpkArchive implements Countable, IteratorAggregate
         /** @var array<string, int> $dirIds */
         $dirIds = [];
 
-        while (($fileExt = $this->stream->readString()) !== '') {
+        while (($ext = $this->stream->readString()) !== '') {
             $extId = count($this->exts);
-            $this->exts[] = $fileExt;
+            $this->exts[] = $ext;
 
-            while (($fileDir = $this->stream->readString()) !== '') {
-                if (! isset($dirIds[$fileDir])) {
-                    $dirIds[$fileDir] = count($this->dirs);
-                    $this->dirs[] = $fileDir;
-                }
+            while (($dir = $this->stream->readString()) !== '') {
+                $dirId = $dirIds[$dir] ??= count($this->dirs);
+                $this->dirs[$dirId] = $dir;
 
-                $dirId = $dirIds[$fileDir];
+                while (($name = $this->stream->readString()) !== '') {
+                    $metadata = $this->stream->read(self::METADATA_LENGTH);
 
-                while (($fileName = $this->stream->readString()) !== '') {
-                    // CRC (V), PreloadBytes (v), ArchiveIndex (v), EntryOffset (V), EntryLength (V), Terminator (v).
-                    $metadata = $this->stream->read(18);
-
-                    // Preload data sits inline right after the record; remember where and skip it.
+                    // Preload data sits inline right after the metadata; remember where and skip it.
                     $preloadOffset = $this->stream->tell();
-                    $this->stream->skip(unpack('v', $metadata, 4)[1]);
+                    $this->stream->skip(unpack(self::METADATA_FORMAT, $metadata)['PreloadBytes']);
 
-                    $path = VpkEntry::joinPath($fileDir, $fileName, $fileExt);
-                    $this->records[self::normalizePath($path)] = pack('VVV', $dirId, $extId, $preloadOffset).$metadata.$fileName;
+                    $path = VpkEntry::normalizePath(VpkEntry::joinPath($dir, $name, $ext));
+                    $this->records[$path] = pack('VVV', $dirId, $extId, $preloadOffset).$metadata.$name;
                 }
             }
         }
@@ -513,11 +501,7 @@ final class VpkArchive implements Countable, IteratorAggregate
         /** @var array{dirId: int, extId: int, preloadOffset: int, CRC: int, PreloadBytes: int, ArchiveIndex: int, EntryOffset: int, EntryLength: int, Terminator: int} $data */
         $data = unpack(self::RECORD_FORMAT, $record);
 
-        $entry = new VpkEntry(
-            $this->dirs[$data['dirId']],
-            $this->getName($record),
-            $this->exts[$data['extId']],
-        );
+        $entry = new VpkEntry($this->dirs[$data['dirId']], $this->getName($record), $this->exts[$data['extId']]);
         $entry->preloadOffset = $data['preloadOffset'];
         $entry->CRC = $data['CRC'];
         $entry->PreloadBytes = $data['PreloadBytes'];
@@ -531,11 +515,10 @@ final class VpkArchive implements Countable, IteratorAggregate
 
     private function getPath(string $record): string
     {
-        return VpkEntry::joinPath(
-            $this->dirs[unpack('V', $record)[1]],
-            $this->getName($record),
-            $this->exts[unpack('V', $record, 4)[1]],
-        );
+        /** @var array{dirId: int, extId: int} $ids */
+        $ids = unpack('VdirId/VextId', $record);
+
+        return VpkEntry::joinPath($this->dirs[$ids['dirId']], $this->getName($record), $this->exts[$ids['extId']]);
     }
 
     private function getName(string $record): string
@@ -544,18 +527,27 @@ final class VpkArchive implements Countable, IteratorAggregate
         return mb_substr($record, self::RECORD_NAME_OFFSET, null, '8bit');
     }
 
-    private function resolve(string|VpkEntry $entry): ?VpkEntry
+    /**
+     * @throws VpkException
+     */
+    private function resolve(string|VpkEntry $entry): VpkEntry
     {
-        return $entry instanceof VpkEntry ? $entry : $this->entry($entry);
+        if ($entry instanceof VpkEntry) {
+            return $entry;
+        }
+
+        return $this->entry($entry) ?? throw VpkException::entryNotFound($entry, $this->vpkPath);
     }
 
     /**
-     * The (source, offset, length) byte ranges that make up an entry's data, in order.
-     * Returns null when a required chunk file is missing.
+     * The byte ranges that make up an entry's data, in order: preload bytes from the dir file,
+     * then the archived bytes from a chunk file (or from the dir file, after the tree).
      *
-     * @return list<array{0: resource, 1: int, 2: int}>|null
+     * @return list<Segment>
+     *
+     * @throws VpkException when a required chunk file is missing
      */
-    private function segments(VpkEntry $entry): ?array
+    private function segments(VpkEntry $entry): array
     {
         $segments = [];
 
@@ -564,94 +556,84 @@ final class VpkArchive implements Countable, IteratorAggregate
         }
 
         if ($entry->EntryLength > 0) {
-            if ($entry->isStoredInDirectory()) {
-                $segments[] = [$this->stream->resource(), $this->dataOffset + $entry->EntryOffset, $entry->EntryLength];
-            } else {
-                $archive = $this->openArchive($entry->ArchiveIndex);
-                if ($archive === null) {
-                    return null;
-                }
-
-                $segments[] = [$archive, $entry->EntryOffset, $entry->EntryLength];
-            }
+            $segments[] = $entry->isStoredInDirectory()
+                ? [$this->stream->resource(), $this->dataOffset + $entry->EntryOffset, $entry->EntryLength]
+                : [$this->openChunk($entry), $entry->EntryOffset, $entry->EntryLength];
         }
 
         return $segments;
     }
 
     /**
-     * @param  list<array{0: resource, 1: int, 2: int}>  $segments
+     * @param  list<Segment>  $segments
      * @param  resource  $destination
+     *
+     * @throws VpkException
      */
-    private function copySegments(array $segments, mixed $destination): bool
+    private function copySegments(VpkEntry $entry, array $segments, mixed $destination): void
     {
-        // Seek explicitly: stream_copy_to_stream() ignores an offset of 0.
-        return array_all(
+        $this->readSegments(
+            $entry,
             $segments,
-            static fn (array $segment): bool => fseek($segment[0], $segment[1]) === 0
-                && stream_copy_to_stream($segment[0], $destination, $segment[2]) === $segment[2],
+            static fn (mixed $source, int $length): int|false => stream_copy_to_stream($source, $destination, $length),
         );
     }
 
     /**
-     * @return resource|null
+     * Seek to each segment and hand it to $consume, which must consume exactly $length bytes.
+     *
+     * @param  list<Segment>  $segments
+     * @param  callable(resource, int): (int|false)  $consume  returns the number of bytes consumed
+     *
+     * @throws VpkException
      */
-    private function openArchive(int $idx): mixed
+    private function readSegments(VpkEntry $entry, array $segments, callable $consume): void
     {
-        $archive = $this->archives[$idx] ?? null;
-        if ($archive === false) {
-            return null;
+        foreach ($segments as [$source, $offset, $length]) {
+            // Seek explicitly: stream_copy_to_stream() ignores an offset of 0.
+            if (fseek($source, $offset) !== 0) {
+                throw VpkException::seekFailed($offset);
+            }
+
+            $consumed = (int) $consume($source, $length);
+            if ($consumed !== $length) {
+                throw VpkException::truncatedData($entry->path, $offset, $length, $consumed);
+            }
         }
+    }
 
-        if (is_resource($archive)) {
-            return $archive;
-        }
+    /**
+     * Chunk handles are opened lazily and cached; a missing chunk is cached as false.
+     *
+     * @return resource
+     *
+     * @throws VpkException
+     */
+    private function openChunk(VpkEntry $entry): mixed
+    {
+        $index = $entry->ArchiveIndex;
+        $path = self::chunkPath($this->vpkPath, $index);
 
-        // Strip the "dir.vpk" suffix, keeping the trailing underscore.
-        $archiveName = sprintf('%s%03d.vpk', mb_substr($this->vpkName, 0, -7), $idx);
-        $archivePath = $this->vpkDir.'/'.$archiveName;
+        $chunk = $this->chunks[$index] ??= is_file($path) ? Filesystem::open($path, 'rb') : false;
 
-        $archive = is_file($archivePath) ? @fopen($archivePath, 'rb') : false;
-        $this->archives[$idx] = $archive;
-
-        return $archive === false ? null : $archive;
+        return $chunk === false ? throw VpkException::chunkNotFound($entry->path, $index, $path) : $chunk;
     }
 
     /**
      * Stream an entry to $file via a temporary ".part" file, so an interrupted extraction
      * never leaves a truncated file that later runs would mistake for a complete one.
+     *
+     * @throws VpkException
      */
-    private function extractEntry(VpkEntry $entry, string $file, bool $overwrite): bool
+    private function extractEntry(VpkEntry $entry, string $file, bool $overwrite): void
     {
         if (! $overwrite && file_exists($file)) {
-            return true;
+            return;
         }
 
+        // Resolve the segments first, so a missing chunk fails before anything touches the disk.
         $segments = $this->segments($entry);
-        if ($segments === null) {
-            return false;
-        }
 
-        $dir = dirname($file);
-        if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
-            return false;
-        }
-
-        $tempFile = $file.'.part';
-        $handle = @fopen($tempFile, 'wb');
-        if ($handle === false) {
-            return false;
-        }
-
-        $copied = $this->copySegments($segments, $handle);
-        fclose($handle);
-
-        if (! $copied || ! rename($tempFile, $file)) {
-            @unlink($tempFile);
-
-            return false;
-        }
-
-        return true;
+        Filesystem::writeFile($file, fn (mixed $handle) => $this->copySegments($entry, $segments, $handle));
     }
 }

@@ -1,6 +1,6 @@
 # php-vpk
 
-A pure-PHP library for reading Valve's [VPK](https://developer.valvesoftware.com/wiki/VPK) archive format — the package format used by Source engine games such as Team Fortress 2, Counter-Strike: Source, and Half-Life 2.
+A pure-PHP library for reading and writing Valve's [VPK](https://developer.valvesoftware.com/wiki/VPK) archive format — the package format used by Source engine games such as Team Fortress 2, Counter-Strike: Source, and Half-Life 2.
 
 Supports VPK v1 and v2 directory files, including preload data and file data embedded in the `_dir.vpk` itself. No native extensions required beyond `ext-mbstring`.
 
@@ -56,6 +56,27 @@ $archive->extractFileTo('materials/logo.vtf', Storage::disk('public')->getDriver
 ```
 
 Files keep their archive paths, relative to the filesystem's root. To extract under a folder, use a disk whose root (or `prefix`) points there. Flysystem errors are rethrown as a `VpkException`, with the original exception as its `previous`.
+
+### Building an archive
+
+```php
+use MoonlyDays\VPK\VpkBuilder;
+
+// One self-contained file, with every file's data stored inside it
+VpkBuilder::create()
+    ->addDirectory(__DIR__ . '/my_mod')                  // every file below the directory
+    ->addFile('materials/logo.vtf', __DIR__ . '/logo.vtf')
+    ->addString('scripts/version.txt', '1.0.0')
+    ->build(__DIR__ . '/my_mod.vpk');
+
+// A "_dir.vpk" plus numbered chunks of at most 100 MB each
+$archive = VpkBuilder::create()
+    ->addDirectory(__DIR__ . '/my_mod')
+    ->chunkSize(100 * 1024 * 1024)
+    ->build(__DIR__ . '/pak01_dir.vpk');
+```
+
+`build()` writes a VPK v1 archive and returns it opened as a `VpkArchive`. File data is streamed, so large files are never loaded into memory. The output is reproducible: entries are sorted, so the same input always produces the same bytes.
 
 ### How VPK files are laid out
 
@@ -116,6 +137,20 @@ Methods that take an entry accept either an in-archive path (`string`) or a `Vpk
 | `close(): void` | Close cached chunk-file handles. Safe to call repeatedly; handles are reopened on demand. |
 
 Reading and extraction methods throw a `VpkException` when the path is unknown, its chunk file is missing, its data is truncated, or the destination can't be written; `extractTo` stops at the first failure. Files that already exist on disk are left untouched unless `$overwrite` is `true`.
+
+### `MoonlyDays\VPK\VpkBuilder`
+
+| Method | Description |
+| --- | --- |
+| `static create(): self` | Start an empty archive. |
+| `addFile(string $path, string $file): self` | Add the file at `$file` under the archive path `$path`. |
+| `addString(string $path, string $contents): self` | Add `$contents` under the archive path `$path`. |
+| `addDirectory(string $dir, string $prefix = ''): self` | Add every file below `$dir`, keeping its relative path (under `$prefix`, if given). |
+| `chunkSize(int $bytes): self` | Split data into `<name>_NNN.vpk` chunks of at most `$bytes`. A larger file gets a chunk of its own. |
+| `has(string $path): bool`, `count(): int` | Whether a path was added, and how many. |
+| `build(string $path): VpkArchive` | Write the archive, replacing existing files, and open it. With `chunkSize()`, `$path` must end in `_dir.vpk`. |
+
+Archive paths accept either slash style. Adding the same path twice (case-insensitively) replaces the first one. Paths that are absolute, contain `..`/`.`/empty segments, `:` or NUL bytes are rejected. Offsets and sizes are limited to 4 GiB per file and per chunk (or per single-file archive).
 
 ### `MoonlyDays\VPK\VpkEntry`
 

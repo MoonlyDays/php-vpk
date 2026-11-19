@@ -72,6 +72,26 @@ final class VpkEntry
     }
 
     /**
+     * Split "dir/name.ext" into on-disk [dir, name, ext] values; the inverse of joinPath().
+     * A leading or trailing dot (".gitignore", "file.") belongs to the name, not the extension.
+     *
+     * @return array{0: string, 1: string, 2: string}
+     */
+    public static function splitPath(string $path): array
+    {
+        $slash = mb_strrpos($path, '/');
+        $dir = $slash === false ? self::BLANK : mb_substr($path, 0, $slash);
+        $file = $slash === false ? $path : mb_substr($path, $slash + 1);
+
+        $dot = mb_strrpos($file, '.');
+        if ($dot === false || $dot === 0 || $dot === mb_strlen($file) - 1) {
+            return [$dir, $file, self::BLANK];
+        }
+
+        return [$dir, mb_substr($file, 0, $dot), mb_substr($file, $dot + 1)];
+    }
+
+    /**
      * Whether $path is a plain relative path that cannot escape a target directory.
      */
     public static function isSafePath(string $path): bool

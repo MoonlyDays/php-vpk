@@ -62,6 +62,22 @@ final class Filesystem
     }
 
     /**
+     * Write all of $data to $handle, which is open on $file.
+     *
+     * @param  resource  $handle
+     *
+     * @throws VpkException
+     */
+    public static function write(mixed $handle, string $data, string $file): void
+    {
+        $written = self::call(static fn (): int|false => fwrite($handle, $data), $error);
+
+        if ($written !== mb_strlen($data, '8bit')) {
+            throw VpkException::writeFailed($file, $error);
+        }
+    }
+
+    /**
      * Create $file (and its directory) through a temporary ".part" file that is renamed into
      * place only when $write succeeds, so a failed write never leaves a partial file behind.
      *

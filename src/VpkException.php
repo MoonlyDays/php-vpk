@@ -91,8 +91,54 @@ class VpkException extends Exception
         return new self(sprintf('Unable to move "%s" to "%s": %s.', $from, $to, $reason));
     }
 
+    public static function writeFailed(string $file, string $reason): self
+    {
+        return new self(sprintf('Unable to write to "%s": %s.', $file, $reason));
+    }
+
     public static function flysystemFailed(string $path, Throwable $previous): self
     {
         return new self(sprintf('Unable to extract "%s" to the filesystem: %s', $path, $previous->getMessage()), 0, $previous);
+    }
+
+    // Building archives
+
+    public static function directoryNotFound(string $dir): self
+    {
+        return new self(sprintf('Directory "%s" does not exist.', $dir));
+    }
+
+    public static function invalidPath(string $path): self
+    {
+        return new self(sprintf(
+            'Invalid archive path "%s": it must be relative, without empty, "." or ".." segments, ":" or NUL bytes.',
+            $path,
+        ));
+    }
+
+    public static function invalidChunkSize(int $bytes): self
+    {
+        return new self(sprintf('Invalid chunk size %d: it must be between 1 and %d bytes.', $bytes, VpkBuilder::MAX_SIZE));
+    }
+
+    public static function invalidChunkPath(string $path): self
+    {
+        return new self(sprintf('A chunked archive must be named "<name>_dir.vpk", got "%s".', $path));
+    }
+
+    public static function sizeLimitExceeded(string $path, int $offset, int $size): self
+    {
+        return new self(sprintf(
+            'Cannot store "%s" (%d bytes at offset %d): VPK offsets and sizes are limited to %d bytes. Use chunkSize() to split the data.',
+            $path,
+            $size,
+            $offset,
+            VpkBuilder::MAX_SIZE,
+        ));
+    }
+
+    public static function sizeChanged(string $path, int $expected, int $actual): self
+    {
+        return new self(sprintf('Source of "%s" changed during the build: expected %d bytes, got %d.', $path, $expected, $actual));
     }
 }

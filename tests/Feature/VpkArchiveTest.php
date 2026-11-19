@@ -150,8 +150,9 @@ it('reads, streams, and verifies entry contents', function (): void {
     expect(stream_get_contents($sink))->toBe('alpha')
         ->and($archive->verify('a.txt'))->toBeTrue();
 
-    $archive->entry('a.txt')->CRC ^= 1;
-    expect($archive->verify('a.txt'))->toBeFalse();
+    $entry = $archive->entry('a.txt');
+    $entry->CRC ^= 1;
+    expect($archive->verify($entry))->toBeFalse();
 });
 
 it('handles preload bytes and data embedded in the dir file', function (): void {

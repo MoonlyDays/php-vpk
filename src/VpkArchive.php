@@ -15,6 +15,13 @@ final class VpkArchive implements Countable, IteratorAggregate
 {
     public const int SIGNATURE = 0x55AA1234;
 
+    /**
+     * Record layout: dirId, extId, preloadOffset, the 18-byte entry metadata, then the file name.
+     */
+    private const string RECORD_FORMAT = 'VdirId/VextId/VpreloadOffset/VCRC/vPreloadBytes/vArchiveIndex/VEntryOffset/VEntryLength/vTerminator';
+
+    private const int RECORD_NAME_OFFSET = 30;
+
     private readonly BinaryStream $stream;
 
     private readonly string $vpkDir;
@@ -54,16 +61,26 @@ final class VpkArchive implements Countable, IteratorAggregate
     private int $dataOffset;
 
     /**
-     * @var list<VpkEntry>
+     * Directory names as stored on disk (' ' is the root).
+     *
+     * @var list<string>
      */
-    private array $entries = [];
+    private array $dirs = [];
 
     /**
-     * Keyed by normalized (lowercase, forward-slash) path.
+     * Extensions as stored on disk (' ' means none).
      *
-     * @var array<string, VpkEntry>
+     * @var list<string>
      */
-    private array $entryByPath = [];
+    private array $exts = [];
+
+    /**
+     * Binary entry records (see RECORD_FORMAT), keyed by normalized path. Stored as strings
+     * instead of VpkEntry objects to save memory; createEntry() builds the object on demand.
+     *
+     * @var array<string, string>
+     */
+    private array $records = [];
 
     /**
      * Lazily opened chunk handles; false marks a chunk known to be missing.
@@ -141,7 +158,7 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function entries(): array
     {
-        return $this->entries;
+        return iterator_to_array($this->getIterator(), false);
     }
 
     /**
@@ -149,7 +166,7 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function files(): array
     {
-        return array_map(static fn (VpkEntry $entry): string => $entry->path, $this->entries);
+        return array_map($this->getPath(...), array_values($this->records));
     }
 
     /**
@@ -157,17 +174,19 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function has(string $path): bool
     {
-        return isset($this->entryByPath[self::normalizePath($path)]);
+        return isset($this->records[self::normalizePath($path)]);
     }
 
     public function entry(string $path): ?VpkEntry
     {
-        return $this->entryByPath[self::normalizePath($path)] ?? null;
+        $record = $this->records[self::normalizePath($path)] ?? null;
+
+        return $record === null ? null : $this->createEntry($record);
     }
 
     public function count(): int
     {
-        return count($this->entries);
+        return count($this->records);
     }
 
     /**
@@ -175,7 +194,9 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function getIterator(): Generator
     {
-        foreach ($this->entries as $entry) {
+        foreach ($this->records as $record) {
+            $entry = $this->createEntry($record);
+
             yield $entry->path => $entry;
         }
     }
@@ -188,8 +209,8 @@ final class VpkArchive implements Countable, IteratorAggregate
     public function directories(): array
     {
         return array_values(array_unique(array_map(
-            static fn (VpkEntry $entry): string => $entry->directory,
-            $this->entries,
+            static fn (string $directory): string => $directory === ' ' ? '' : $directory,
+            $this->dirs,
         )));
     }
 
@@ -200,10 +221,10 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function extensions(): array
     {
-        return array_values(array_unique(array_filter(array_map(
-            static fn (VpkEntry $entry): string => $entry->extension,
-            $this->entries,
-        ), static fn (string $ext): bool => $ext !== '')));
+        return array_values(array_unique(array_filter(
+            $this->exts,
+            static fn (string $ext): bool => $ext !== ' ' && $ext !== '',
+        )));
     }
 
     /**
@@ -235,7 +256,14 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function filter(callable $callback): array
     {
-        return array_values(array_filter($this->entries, $callback));
+        $matches = [];
+        foreach ($this->getIterator() as $entry) {
+            if ($callback($entry)) {
+                $matches[] = $entry;
+            }
+        }
+
+        return $matches;
     }
 
     /**
@@ -243,7 +271,13 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     public function totalSize(): int
     {
-        return array_sum(array_map(static fn (VpkEntry $entry): int => $entry->size(), $this->entries));
+        $total = 0;
+        foreach ($this->records as $record) {
+            // PreloadBytes (v) at byte 16, EntryLength (V) at byte 24.
+            $total += unpack('v', $record, 16)[1] + unpack('V', $record, 24)[1];
+        }
+
+        return $total;
     }
 
     /**
@@ -370,7 +404,7 @@ final class VpkArchive implements Countable, IteratorAggregate
     public function extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int
     {
         $extracted = 0;
-        foreach ($this->entries as $entry) {
+        foreach ($this->getIterator() as $entry) {
             if ($filter !== null && ! $filter($entry)) {
                 continue;
             }
@@ -442,28 +476,72 @@ final class VpkArchive implements Countable, IteratorAggregate
      */
     private function readTree(): void
     {
+        /** @var array<string, int> $dirIds */
+        $dirIds = [];
+
         while (($fileExt = $this->stream->readString()) !== '') {
+            $extId = count($this->exts);
+            $this->exts[] = $fileExt;
+
             while (($fileDir = $this->stream->readString()) !== '') {
+                if (! isset($dirIds[$fileDir])) {
+                    $dirIds[$fileDir] = count($this->dirs);
+                    $this->dirs[] = $fileDir;
+                }
+
+                $dirId = $dirIds[$fileDir];
+
                 while (($fileName = $this->stream->readString()) !== '') {
-                    $entry = new VpkEntry($fileDir, $fileName, $fileExt);
-                    $entry->CRC = $this->stream->readInt32();
-                    $entry->PreloadBytes = $this->stream->readInt16();
-                    $entry->ArchiveIndex = $this->stream->readInt16();
-                    $entry->EntryOffset = $this->stream->readInt32();
-                    $entry->EntryLength = $this->stream->readInt32();
-                    $entry->Terminator = $this->stream->readInt16();
+                    // CRC (V), PreloadBytes (v), ArchiveIndex (v), EntryOffset (V), EntryLength (V), Terminator (v).
+                    $metadata = $this->stream->read(18);
 
                     // Preload data sits inline right after the record; remember where and skip it.
-                    $entry->preloadOffset = $this->stream->tell();
-                    $this->stream->skip($entry->PreloadBytes);
+                    $preloadOffset = $this->stream->tell();
+                    $this->stream->skip(unpack('v', $metadata, 4)[1]);
 
-                    $this->entries[] = $entry;
-                    $this->entryByPath[self::normalizePath($entry->path)] = $entry;
+                    $path = VpkEntry::joinPath($fileDir, $fileName, $fileExt);
+                    $this->records[self::normalizePath($path)] = pack('VVV', $dirId, $extId, $preloadOffset).$metadata.$fileName;
                 }
             }
         }
 
         $this->dataOffset = $this->stream->tell();
+    }
+
+    private function createEntry(string $record): VpkEntry
+    {
+        /** @var array{dirId: int, extId: int, preloadOffset: int, CRC: int, PreloadBytes: int, ArchiveIndex: int, EntryOffset: int, EntryLength: int, Terminator: int} $data */
+        $data = unpack(self::RECORD_FORMAT, $record);
+
+        $entry = new VpkEntry(
+            $this->dirs[$data['dirId']],
+            $this->getName($record),
+            $this->exts[$data['extId']],
+        );
+        $entry->preloadOffset = $data['preloadOffset'];
+        $entry->CRC = $data['CRC'];
+        $entry->PreloadBytes = $data['PreloadBytes'];
+        $entry->ArchiveIndex = $data['ArchiveIndex'];
+        $entry->EntryOffset = $data['EntryOffset'];
+        $entry->EntryLength = $data['EntryLength'];
+        $entry->Terminator = $data['Terminator'];
+
+        return $entry;
+    }
+
+    private function getPath(string $record): string
+    {
+        return VpkEntry::joinPath(
+            $this->dirs[unpack('V', $record)[1]],
+            $this->getName($record),
+            $this->exts[unpack('V', $record, 4)[1]],
+        );
+    }
+
+    private function getName(string $record): string
+    {
+        // '8bit': offset in bytes.
+        return mb_substr($record, self::RECORD_NAME_OFFSET, null, '8bit');
     }
 
     private function resolve(string|VpkEntry $entry): ?VpkEntry

@@ -13,11 +13,9 @@ final class VpkEntry
 
     public string $path;
 
-    public string $extension = '';
+    public string $extension;
 
-    public string $directory = '';
-
-    public string $name;
+    public string $directory;
 
     /**
      * @var int A 32bit CRC of the file's data.
@@ -51,22 +49,21 @@ final class VpkEntry
      */
     public int $preloadOffset = 0;
 
-    public function __construct(string $dir, string $name, string $ext)
+    public function __construct(string $dir, public string $name, string $ext)
     {
-        $filePath = $name;
-        $this->name = $name;
+        $this->extension = $ext === ' ' ? '' : $ext;
+        $this->directory = $dir === ' ' ? '' : $dir;
+        $this->path = self::joinPath($dir, $this->name, $ext);
+    }
 
-        if ($ext !== ' ') {
-            $this->extension = $ext;
-            $filePath .= '.'.$ext;
-        }
+    /**
+     * Build "dir/name.ext" from on-disk values (' ' means root directory / no extension).
+     */
+    public static function joinPath(string $dir, string $name, string $ext): string
+    {
+        $path = $ext === ' ' ? $name : $name.'.'.$ext;
 
-        if ($dir !== ' ') {
-            $this->directory = $dir;
-            $filePath = $dir.'/'.$filePath;
-        }
-
-        $this->path = $filePath;
+        return $dir === ' ' ? $path : $dir.'/'.$path;
     }
 
     /**

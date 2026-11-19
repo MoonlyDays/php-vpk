@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use MoonlyDays\VPK\VpkArchive;
 use MoonlyDays\VPK\VpkException;
-use Tests\Support\VpkFixture;
+use Tests\Support\VpkFactory;
 
 beforeEach(function (): void {
     $this->tempDir = sys_get_temp_dir().'/php-vpk-test-'.bin2hex(random_bytes(6));
@@ -12,7 +12,7 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
-    VpkFixture::cleanup($this->tempDir);
+    VpkFactory::cleanup($this->tempDir);
 });
 
 it('rejects a file whose header signature is not 0x55AA1234', function (): void {
@@ -23,7 +23,7 @@ it('rejects a file whose header signature is not 0x55AA1234', function (): void 
 });
 
 it('returns false from extractFileTo for a path that is not in the archive', function (): void {
-    $dirPath = VpkFixture::create($this->tempDir, [
+    $dirPath = VpkFactory::create($this->tempDir, [
         ['path' => 'present.txt', 'data' => 'here'],
     ]);
     $archive = new VpkArchive($dirPath);
@@ -40,7 +40,7 @@ it('round-trips a synthetic archive: parse, enumerate, and extract file contents
         ['path' => 'materials/textures/wood.vmt', 'data' => str_repeat('A', 256)],
     ];
 
-    $dirPath = VpkFixture::create($this->tempDir, $files);
+    $dirPath = VpkFactory::create($this->tempDir, $files);
     $archive = new VpkArchive($dirPath);
 
     // All three paths should show up in files().
@@ -68,7 +68,7 @@ it('extracts a single named file via extractFileTo', function (): void {
         ['path' => 'a/two.txt', 'data' => 'TWO'],
     ];
 
-    $dirPath = VpkFixture::create($this->tempDir, $files);
+    $dirPath = VpkFactory::create($this->tempDir, $files);
     $archive = new VpkArchive($dirPath);
 
     $outDir = $this->tempDir.'/out';
@@ -83,7 +83,7 @@ it('extracts a single named file via extractFileTo', function (): void {
 
 it('silently skips extraction when the backing archive chunk is missing', function (): void {
     $files = [['path' => 'orphan.txt', 'data' => 'data']];
-    $dirPath = VpkFixture::create($this->tempDir, $files);
+    $dirPath = VpkFactory::create($this->tempDir, $files);
 
     // Remove the _000.vpk so openArchive() has nothing to point at.
     unlink($this->tempDir.'/test_000.vpk');
@@ -101,14 +101,14 @@ it('silently skips extraction when the backing archive chunk is missing', functi
 });
 
 it('parses the v1 header fields', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [['path' => 'a.txt', 'data' => 'x']]));
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [['path' => 'a.txt', 'data' => 'x']]));
 
     expect($archive->version())->toBe(1);
     expect($archive->treeSize())->toBeGreaterThan(0);
 });
 
 it('exposes lookup, counting, and iteration helpers', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [
         ['path' => 'materials/wood.vmt', 'data' => 'WOOD'],
         ['path' => 'materials/brick/red.vmt', 'data' => 'RED'],
         ['path' => 'scripts/game.txt', 'data' => 'GAME'],
@@ -133,7 +133,7 @@ it('exposes lookup, counting, and iteration helpers', function (): void {
 });
 
 it('reads, streams, and verifies entry contents', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [
         ['path' => 'a.txt', 'data' => 'alpha'],
     ]));
 
@@ -163,7 +163,7 @@ it('handles preload bytes and data embedded in the dir file', function (): void 
         ['path' => 'both.txt', 'data' => 'PRErest', 'preload' => 3, 'inline' => true],
         ['path' => 'chunk.txt', 'data' => 'chunked'],
     ];
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, $files));
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, $files));
 
     expect($archive->entry('embedded.txt')->isStoredInDirectory())->toBeTrue()
         ->and($archive->entry('split.txt')->hasPreloadData())->toBeTrue();
@@ -178,7 +178,7 @@ it('handles preload bytes and data embedded in the dir file', function (): void 
 });
 
 it('extracts only filtered entries and to explicit destinations', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [
         ['path' => 'a/keep.vmt', 'data' => 'K'],
         ['path' => 'a/skip.txt', 'data' => 'S'],
     ]));
@@ -194,7 +194,7 @@ it('extracts only filtered entries and to explicit destinations', function (): v
 });
 
 it('skips existing files unless overwrite is requested', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [['path' => 'f.txt', 'data' => 'new']]));
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [['path' => 'f.txt', 'data' => 'new']]));
     $outDir = $this->tempDir.'/out';
     mkdir($outDir);
     file_put_contents($outDir.'/f.txt', 'old');
@@ -208,14 +208,14 @@ it('skips existing files unless overwrite is requested', function (): void {
 });
 
 it('refuses to extract entries that would escape the target directory', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir.'/vpk', [['path' => '../evil.txt', 'data' => 'x']]));
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir.'/vpk', [['path' => '../evil.txt', 'data' => 'x']]));
 
     expect($archive->extractFileTo('../evil.txt', $this->tempDir.'/out'))->toBeFalse()
         ->and(file_exists($this->tempDir.'/evil.txt'))->toBeFalse();
 });
 
 it('can be closed repeatedly and still extract afterwards', function (): void {
-    $archive = VpkArchive::fromPath(VpkFixture::create($this->tempDir, [['path' => 'f.txt', 'data' => 'data']]));
+    $archive = VpkArchive::fromPath(VpkFactory::create($this->tempDir, [['path' => 'f.txt', 'data' => 'data']]));
 
     expect($archive->read('f.txt'))->toBe('data');
     $archive->close();

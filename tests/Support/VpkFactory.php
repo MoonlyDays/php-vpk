@@ -29,7 +29,7 @@ namespace Tests\Support;
  *       <null>     // end of directories
  *     <null>       // end of extensions
  */
-final class VpkFixture
+final class VpkFactory
 {
     /**
      * Each file may optionally set:

@@ -11,7 +11,7 @@ PHP library implementing Valve's VPK archive format (used by Source engine games
 - `composer test` — run the Pest 5 suite (`tests/Unit` + `tests/Feature`). Run a single file with `vendor/bin/pest tests/Unit/BinaryStreamTest.php`, or filter by name with `vendor/bin/pest --filter='round-trips a synthetic archive'`.
 - `composer lint` — run Laravel Pint (parallel), then Rector (`rector.php`: PHP-version sets plus dead-code, coding-style and type-declaration sets, over `src/` only). The `pint.json` preset is strict: `declare(strict_types=1)`, strict comparisons, ordered class elements, global namespace imports for classes/constants/functions, and **`mb_str_functions`** (Pint will rewrite `strlen`/`substr`/etc. to their `mb_*` equivalents — be mindful that `mb_strlen` counts characters, not bytes, which matters when handling binary payloads). Run it after any code change.
 
-The Pest suite generates all its VPK fixtures at runtime via `tests/Support/VpkFixture.php`, which builds deterministic `*_dir.vpk` + `*_000.vpk` pairs in a temp dir. There is intentionally no real VPK file checked into the repo — if you're chasing a regression against a real Valve-produced archive, drop one into a temp location and point a throwaway test at it rather than committing the binary.
+The Pest suite generates all its VPK fixtures at runtime via `tests/Support/VpkFactory.php`, which builds deterministic `*_dir.vpk` + `*_000.vpk` pairs in a temp dir. There is intentionally no real VPK file checked into the repo — if you're chasing a regression against a real Valve-produced archive, drop one into a temp location and point a throwaway test at it rather than committing the binary.
 
 ## Architecture
 

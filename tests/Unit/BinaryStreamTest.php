@@ -46,23 +46,23 @@ it('reads multiple values sequentially without losing position', function (): vo
     $path = writeTempBinary("\x01\x00\x00\x00\xFF\xFF\x7F");
     $stream = new BinaryStream($path);
 
-    expect($stream->readInt32())->toBe(1);
-    expect($stream->readInt16())->toBe(0xFFFF);
-    expect($stream->readByte())->toBe(0x7F);
+    expect($stream->readInt32())->toBe(1)
+        ->and($stream->readInt16())->toBe(0xFFFF)
+        ->and($stream->readByte())->toBe(0x7F);
 });
 
 it('reads null-terminated strings and consumes the terminator', function (): void {
     $path = writeTempBinary("hello\0world\0");
     $stream = new BinaryStream($path);
 
-    expect($stream->readString())->toBe('hello');
-    expect($stream->readString())->toBe('world');
+    expect($stream->readString())->toBe('hello')
+        ->and($stream->readString())->toBe('world');
 });
 
 it('returns an empty string when the first byte is a null terminator', function (): void {
     $path = writeTempBinary("\0abc\0");
     $stream = new BinaryStream($path);
 
-    expect($stream->readString())->toBe('');
-    expect($stream->readString())->toBe('abc');
+    expect($stream->readString())->toBe('')
+        ->and($stream->readString())->toBe('abc');
 });

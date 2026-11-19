@@ -1,41 +1,46 @@
 {
-  "name": "moonlydays/php-vpk",
-  "description": "Valve's VPK archive implementation for PHP.",
-  "license": "MIT",
-  "homepage": "https://github.com/MoonlyDays/php-vpk",
-  "authors": [
-    {
-      "name": "Daniil Basiuc-Brinzei",
-      "email": "moonlydays1@gmail.com"
-    }
-  ],
-  "require": {
-    "php": "^8.2",
-    "ext-mbstring": "*"
-  },
-  "autoload": {
-    "psr-4": {
-      "MoonlyDays\\VPK\\": "src/"
-    }
-  },
-  "autoload-dev": {
-    "psr-4": {
-      "Tests\\": "tests/"
-    }
-  },
-  "scripts": {
-    "lint": "pint --parallel",
-    "test": "pest"
-  },
-  "require-dev": {
-    "laravel/pint": "^1.16",
-    "pestphp/pest": "^3.8"
-  },
-  "config": {
-    "allow-plugins": {
-      "pestphp/pest-plugin": true
-    }
-  },
-  "minimum-stability": "dev",
-  "prefer-stable": true
+    "name": "moonlydays/php-vpk",
+    "description": "Valve's VPK archive implementation for PHP.",
+    "license": "MIT",
+    "homepage": "https://github.com/MoonlyDays/php-vpk",
+    "authors": [
+        {
+            "name": "Daniil Basiuc-Brinzei",
+            "email": "moonlydays@ampersoftware.com"
+        }
+    ],
+    "require": {
+        "php": "^8.5",
+        "ext-mbstring": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "MoonlyDays\\VPK\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "lint": [
+            "pint --parallel",
+            "rector"
+        ],
+        "test": "pest"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.32.3",
+        "pestphp/pest": "^5.0",
+        "rector/rector": "^2.8",
+        "pestphp/pest-plugin-rector": "^5.0"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
 }

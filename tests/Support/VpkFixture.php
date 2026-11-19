@@ -32,7 +32,11 @@ namespace Tests\Support;
 final class VpkFixture
 {
     /**
-     * @param  array<int, array{path: string, data: string}>  $files
+     * Each file may optionally set:
+     *  - `preload`: number of leading bytes stored inline in the directory tree (PreloadBytes)
+     *  - `inline`: store the remaining bytes after the tree in the _dir.vpk (ArchiveIndex 0x7fff)
+     *
+     * @param  array<int, array{path: string, data: string, preload?: int, inline?: bool}>  $files
      * @return string absolute path to the generated `*_dir.vpk`
      */
     public static function create(string $tempDir, array $files, string $baseName = 'test'): string
@@ -41,18 +45,32 @@ final class VpkFixture
             mkdir($tempDir, 0777, true);
         }
 
-        // Concatenate all file payloads into a single chunk file; remember each
-        // entry's offset/length so the directory tree can point at them.
+        // Split each payload into preload bytes + remainder, and append the
+        // remainder to either the chunk file or the dir file's data section.
         $chunk = '';
+        $embedded = '';
         $entries = [];
         foreach ($files as $file) {
-            $offset = mb_strlen($chunk);
-            $chunk .= $file['data'];
+            $preloadLength = $file['preload'] ?? 0;
+            $preload = mb_substr($file['data'], 0, $preloadLength, '8bit');
+            $rest = mb_substr($file['data'], $preloadLength, null, '8bit');
+            $inline = $file['inline'] ?? false;
+
+            if ($inline) {
+                $offset = mb_strlen($embedded, '8bit');
+                $embedded .= $rest;
+            } else {
+                $offset = mb_strlen($chunk, '8bit');
+                $chunk .= $rest;
+            }
+
             $entries[] = [
                 'path' => $file['path'],
                 'data' => $file['data'],
+                'preload' => $preload,
+                'archive' => $inline ? 0x7FFF : 0,
                 'offset' => $offset,
-                'length' => mb_strlen($file['data']),
+                'length' => mb_strlen($rest, '8bit'),
             ];
         }
 
@@ -73,25 +91,30 @@ final class VpkFixture
             foreach ($dirs as $dir => $items) {
                 $tree .= $dir."\0";
                 foreach ($items as $item) {
+                    $entry = $item['entry'];
                     $tree .= $item['name']."\0";
-                    $tree .= pack('V', crc32($item['entry']['data']));
-                    $tree .= pack('v', 0);                         // PreloadBytes
-                    $tree .= pack('v', 0);                         // ArchiveIndex → _000.vpk
-                    $tree .= pack('V', $item['entry']['offset']);  // EntryOffset
-                    $tree .= pack('V', $item['entry']['length']);  // EntryLength
-                    $tree .= pack('v', 0xFFFF);                    // Terminator
+                    $tree .= pack('V', crc32($entry['data']));
+                    $tree .= pack('v', mb_strlen($entry['preload'], '8bit')); // PreloadBytes
+                    $tree .= pack('v', $entry['archive']);                     // ArchiveIndex
+                    $tree .= pack('V', $entry['offset']);                      // EntryOffset
+                    $tree .= pack('V', $entry['length']);                      // EntryLength
+                    $tree .= pack('v', 0xFFFF);                                // Terminator
+                    $tree .= $entry['preload'];
                 }
+
                 $tree .= "\0"; // end of filenames
             }
+
             $tree .= "\0"; // end of directories
         }
+
         $tree .= "\0"; // end of extensions
 
-        $header = pack('V', 0x55AA1234).pack('V', 1).pack('V', mb_strlen($tree));
+        $header = pack('V', 0x55AA1234).pack('V', 1).pack('V', mb_strlen($tree, '8bit'));
 
         $dirPath = $tempDir.'/'.$baseName.'_dir.vpk';
         $chunkPath = $tempDir.'/'.$baseName.'_000.vpk';
-        file_put_contents($dirPath, $header.$tree);
+        file_put_contents($dirPath, $header.$tree.$embedded);
         file_put_contents($chunkPath, $chunk);
 
         return $dirPath;
@@ -112,6 +135,7 @@ final class VpkFixture
             if ($item === '.' || $item === '..') {
                 continue;
             }
+
             $path = $dir.'/'.$item;
             if (is_dir($path)) {
                 self::cleanup($path);
@@ -119,6 +143,7 @@ final class VpkFixture
                 unlink($path);
             }
         }
+
         rmdir($dir);
     }
 

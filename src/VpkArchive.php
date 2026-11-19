@@ -4,104 +4,447 @@ declare(strict_types=1);
 
 namespace MoonlyDays\VPK;
 
-use Exception;
+use Countable;
+use Generator;
+use IteratorAggregate;
 
-final class VpkArchive
+/**
+ * @implements IteratorAggregate<string, VpkEntry>
+ */
+final class VpkArchive implements Countable, IteratorAggregate
 {
-    private const SIGNATURE = 0x55AA1234;
+    public const int SIGNATURE = 0x55AA1234;
 
-    private int $version = 0;
+    private readonly BinaryStream $stream;
+
+    private readonly string $vpkDir;
+
+    private readonly string $vpkName;
+
+    private int $version;
 
     /**
-     * The size, in bytes, of the directory tree
+     * The size, in bytes, of the directory tree.
      */
     private int $treeSize = 0;
 
     /**
-     * How many bytes of file content are stored in this VPK file (0 in CSGO)
+     * How many bytes of file content are stored in this VPK file (0 in CSGO).
      */
     private int $fileDataSectionSize = 0;
 
     /**
-     * The size, in bytes, of the section containing MD5 checksums for external archive content
+     * The size, in bytes, of the section containing MD5 checksums for external archive content.
      */
-    private int $archiveMD5SectionSize = 0;
+    private int $archiveMd5SectionSize = 0;
 
     /**
-     * The size, in bytes, of the section containing MD5 checksums for content in this file (should always be 48)
+     * The size, in bytes, of the section containing MD5 checksums for content in this file.
      */
-    private int $otherMD5SectionSize = 0;
+    private int $otherMd5SectionSize = 0;
 
     /**
-     * The size, in bytes, of the section containing the public key and signature. This is either 0 (CSGO & The Ship) or 296 (HL2, HL2:DM, HL2:EP1, HL2:EP2, HL2:LC, TF2, DOD:S & CS:S)
+     * The size, in bytes, of the section containing the public key and signature.
      */
     private int $signatureSectionSize = 0;
 
-    private BinaryStream $stream;
+    /**
+     * Absolute offset in the _dir.vpk where the directory tree ends and embedded file data begins.
+     */
+    private int $dataOffset;
 
-    private string $vpkPath;
-
-    private string $vpkDir;
-
-    private string $vpkName;
-
+    /**
+     * @var list<VpkEntry>
+     */
     private array $entries = [];
 
+    /**
+     * Keyed by normalized (lowercase, forward-slash) path.
+     *
+     * @var array<string, VpkEntry>
+     */
     private array $entryByPath = [];
 
-    private array $files = [];
-
+    /**
+     * Lazily opened chunk handles; false marks a chunk known to be missing.
+     *
+     * @var array<int, resource|false>
+     */
     private array $archives = [];
 
     /**
      * @throws VpkException
-     * @throws Exception
      */
-    public function __construct(string $filePath)
+    public function __construct(
+        private readonly string $vpkPath
+    ) {
+        $this->vpkDir = dirname($this->vpkPath);
+        $this->vpkName = basename($this->vpkPath);
+
+        $this->stream = new BinaryStream($this->vpkPath);
+        $this->readHeader();
+        $this->readTree();
+    }
+
+    public function __destruct()
     {
-        $this->vpkPath = $filePath;
-        $this->vpkDir = dirname($filePath);
-        $this->vpkName = basename($filePath);
+        $this->close();
+    }
 
-        $this->stream = new BinaryStream($filePath);
-        $sig = $this->stream->readInt32();
+    /**
+     * Open the archive whose directory file (`<name>_dir.vpk`) lives at $vpkPath.
+     *
+     * @throws VpkException
+     */
+    public static function fromPath(string $vpkPath): self
+    {
+        return new self($vpkPath);
+    }
 
-        if ($sig !== self::SIGNATURE) {
+    public function path(): string
+    {
+        return $this->vpkPath;
+    }
+
+    public function version(): int
+    {
+        return $this->version;
+    }
+
+    public function treeSize(): int
+    {
+        return $this->treeSize;
+    }
+
+    public function fileDataSectionSize(): int
+    {
+        return $this->fileDataSectionSize;
+    }
+
+    public function archiveMd5SectionSize(): int
+    {
+        return $this->archiveMd5SectionSize;
+    }
+
+    public function otherMd5SectionSize(): int
+    {
+        return $this->otherMd5SectionSize;
+    }
+
+    public function signatureSectionSize(): int
+    {
+        return $this->signatureSectionSize;
+    }
+
+    /**
+     * @return list<VpkEntry>
+     */
+    public function entries(): array
+    {
+        return $this->entries;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function files(): array
+    {
+        return array_map(static fn (VpkEntry $entry): string => $entry->path, $this->entries);
+    }
+
+    /**
+     * Lookups are case-insensitive and accept either slash style, matching the Source engine.
+     */
+    public function has(string $path): bool
+    {
+        return isset($this->entryByPath[self::normalizePath($path)]);
+    }
+
+    public function entry(string $path): ?VpkEntry
+    {
+        return $this->entryByPath[self::normalizePath($path)] ?? null;
+    }
+
+    public function count(): int
+    {
+        return count($this->entries);
+    }
+
+    /**
+     * @return Generator<string, VpkEntry>
+     */
+    public function getIterator(): Generator
+    {
+        foreach ($this->entries as $entry) {
+            yield $entry->path => $entry;
+        }
+    }
+
+    /**
+     * Unique directory paths in the archive ('' is the root).
+     *
+     * @return list<string>
+     */
+    public function directories(): array
+    {
+        return array_values(array_unique(array_map(
+            static fn (VpkEntry $entry): string => $entry->directory,
+            $this->entries,
+        )));
+    }
+
+    /**
+     * Unique file extensions in the archive, without the leading dot.
+     *
+     * @return list<string>
+     */
+    public function extensions(): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            static fn (VpkEntry $entry): string => $entry->extension,
+            $this->entries,
+        ), static fn (string $ext): bool => $ext !== '')));
+    }
+
+    /**
+     * Entries located in $directory (and its subdirectories when $recursive is true).
+     *
+     * @return list<VpkEntry>
+     */
+    public function filesIn(string $directory, bool $recursive = false): array
+    {
+        return $this->filter(static fn (VpkEntry $entry): bool => $entry->isIn($directory, $recursive));
+    }
+
+    /**
+     * Entries whose path matches a shell-style glob, case-insensitively (e.g. "materials/*.vmt").
+     * Note that '*' also matches across '/'.
+     *
+     * @return list<VpkEntry>
+     */
+    public function find(string $pattern): array
+    {
+        $pattern = self::normalizePath($pattern);
+
+        return $this->filter(static fn (VpkEntry $entry): bool => fnmatch($pattern, mb_strtolower($entry->path)));
+    }
+
+    /**
+     * @param  callable(VpkEntry): bool  $callback
+     * @return list<VpkEntry>
+     */
+    public function filter(callable $callback): array
+    {
+        return array_values(array_filter($this->entries, $callback));
+    }
+
+    /**
+     * Combined uncompressed size of every file in the archive, in bytes.
+     */
+    public function totalSize(): int
+    {
+        return array_sum(array_map(static fn (VpkEntry $entry): int => $entry->size(), $this->entries));
+    }
+
+    /**
+     * Copy an entry's contents into an open, writable stream without buffering it in PHP memory.
+     *
+     * @param  resource  $destination
+     */
+    public function writeTo(string|VpkEntry $entry, mixed $destination): bool
+    {
+        $entry = $this->resolve($entry);
+        if (! $entry instanceof VpkEntry) {
+            return false;
+        }
+
+        $segments = $this->segments($entry);
+        if ($segments === null) {
+            return false;
+        }
+
+        return $this->copySegments($segments, $destination);
+    }
+
+    /**
+     * Open an entry as a readable, rewound stream. Small files stay in memory; anything above
+     * 2 MB is spilled to a temp file by php://temp. The caller owns (and should fclose) the stream.
+     *
+     * @return resource|null
+     */
+    public function stream(string|VpkEntry $entry): mixed
+    {
+        $stream = fopen('php://temp', 'w+b');
+        if ($stream === false) {
+            return null;
+        }
+
+        if (! $this->writeTo($entry, $stream)) {
+            fclose($stream);
+
+            return null;
+        }
+
+        rewind($stream);
+
+        return $stream;
+    }
+
+    /**
+     * Read an entry's full contents into a string. Convenient for small files; prefer
+     * stream()/writeTo()/extract*() for large ones.
+     */
+    public function read(string|VpkEntry $entry): ?string
+    {
+        $stream = $this->stream($entry);
+        if ($stream === null) {
+            return null;
+        }
+
+        $contents = stream_get_contents($stream);
+        fclose($stream);
+
+        return $contents === false ? null : $contents;
+    }
+
+    /**
+     * Check an entry's data against its stored CRC32. Streams the data; nothing is buffered.
+     */
+    public function verify(string|VpkEntry $entry): bool
+    {
+        $entry = $this->resolve($entry);
+        if (! $entry instanceof VpkEntry) {
+            return false;
+        }
+
+        $segments = $this->segments($entry);
+        if ($segments === null) {
+            return false;
+        }
+
+        $context = hash_init('crc32b');
+        foreach ($segments as [$source, $offset, $length]) {
+            fseek($source, $offset);
+            if (hash_update_stream($context, $source, $length) !== $length) {
+                return false;
+            }
+        }
+
+        return hash_final($context) === $entry->crcHex();
+    }
+
+    /**
+     * Extract a single file into $targetDir, preserving its archive path.
+     */
+    public function extractFileTo(string|VpkEntry $path, string $targetDir, bool $overwrite = false): bool
+    {
+        $entry = $this->resolve($path);
+        if (! $entry instanceof VpkEntry || ! self::isSafePath($entry->path)) {
+            return false;
+        }
+
+        return $this->extractEntry($entry, $targetDir.'/'.$entry->path, $overwrite);
+    }
+
+    /**
+     * Extract a single file to an explicit destination file path.
+     */
+    public function extractFileAs(string|VpkEntry $path, string $destination, bool $overwrite = false): bool
+    {
+        $entry = $this->resolve($path);
+        if (! $entry instanceof VpkEntry) {
+            return false;
+        }
+
+        return $this->extractEntry($entry, $destination, $overwrite);
+    }
+
+    /**
+     * Extract every entry (optionally only those accepted by $filter) into $targetDir.
+     *
+     * @param  string  $targetDir  directory to extract into; created on demand
+     * @param  (callable(VpkEntry): bool)|null  $filter
+     * @param  bool  $overwrite  re-extract files that already exist on disk
+     * @return int number of files successfully extracted (or already present)
+     */
+    public function extractTo(string $targetDir, ?callable $filter = null, bool $overwrite = false): int
+    {
+        $extracted = 0;
+        foreach ($this->entries as $entry) {
+            if ($filter !== null && ! $filter($entry)) {
+                continue;
+            }
+
+            if ($this->extractFileTo($entry, $targetDir, $overwrite)) {
+                $extracted++;
+            }
+        }
+
+        return $extracted;
+    }
+
+    /**
+     * Release all open chunk handles. Safe to call more than once; handles are reopened on demand.
+     */
+    public function close(): void
+    {
+        foreach ($this->archives as $archive) {
+            if (is_resource($archive)) {
+                fclose($archive);
+            }
+        }
+
+        $this->archives = [];
+    }
+
+    private static function normalizePath(string $path): string
+    {
+        return mb_strtolower(mb_ltrim(str_replace('\\', '/', $path), '/'));
+    }
+
+    /**
+     * Reject paths that could escape the extraction directory.
+     */
+    private static function isSafePath(string $path): bool
+    {
+        if ($path === '' || str_starts_with($path, '/') || str_contains($path, ':') || str_contains($path, '\\')) {
+            return false;
+        }
+
+        return ! in_array('..', explode('/', $path), true);
+    }
+
+    /**
+     * @throws VpkException
+     */
+    private function readHeader(): void
+    {
+        if ($this->stream->readInt32() !== self::SIGNATURE) {
             throw new VpkException('Invalid Header Signature');
         }
 
         $this->version = $this->stream->readInt32();
 
-        // only read this for VPKs of version 2.0
         if ($this->version >= 1) {
             $this->treeSize = $this->stream->readInt32();
         }
 
         if ($this->version >= 2) {
             $this->fileDataSectionSize = $this->stream->readInt32();
-            $this->archiveMD5SectionSize = $this->stream->readInt32();
-            $this->otherMD5SectionSize = $this->stream->readInt32();
+            $this->archiveMd5SectionSize = $this->stream->readInt32();
+            $this->otherMd5SectionSize = $this->stream->readInt32();
             $this->signatureSectionSize = $this->stream->readInt32();
         }
+    }
 
-        while (true) {
-            $fileExt = $this->stream->readString();
-            if ($fileExt === '') {
-                break;
-            }
-
-            while (true) {
-                $fileDir = $this->stream->readString();
-                if ($fileDir === '') {
-                    break;
-                }
-
-                while (true) {
-                    $fileName = $this->stream->readString();
-                    if ($fileName === '') {
-                        break;
-                    }
-
+    /**
+     * @throws VpkException
+     */
+    private function readTree(): void
+    {
+        while (($fileExt = $this->stream->readString()) !== '') {
+            while (($fileDir = $this->stream->readString()) !== '') {
+                while (($fileName = $this->stream->readString()) !== '') {
                     $entry = new VpkEntry($fileDir, $fileName, $fileExt);
                     $entry->CRC = $this->stream->readInt32();
                     $entry->PreloadBytes = $this->stream->readInt16();
@@ -110,102 +453,126 @@ final class VpkArchive
                     $entry->EntryLength = $this->stream->readInt32();
                     $entry->Terminator = $this->stream->readInt16();
 
-                    $this->entryByPath[$entry->path] = $entry;
+                    // Preload data sits inline right after the record; remember where and skip it.
+                    $entry->preloadOffset = $this->stream->tell();
+                    $this->stream->skip($entry->PreloadBytes);
+
                     $this->entries[] = $entry;
-                    $this->files[] = $entry->path;
+                    $this->entryByPath[self::normalizePath($entry->path)] = $entry;
                 }
             }
         }
+
+        $this->dataOffset = $this->stream->tell();
     }
 
-    public function extractFileTo(string $path, string $targetDir): bool
+    private function resolve(string|VpkEntry $entry): ?VpkEntry
     {
-        $entry = $this->entryByPath[$path] ?? null;
-        if (empty($entry)) {
-            return false;
-        }
-
-        return $this->extractEntry($entry, $targetDir);
-    }
-
-    public function extractTo(string $targetDir): void
-    {
-        foreach ($this->entries as $entry) {
-            $this->extractEntry($entry, $targetDir);
-        }
-    }
-
-    public function files(): array
-    {
-        return $this->files;
-    }
-
-    public function close(): void
-    {
-        foreach ($this->archives as $archive) {
-            if ($archive === false) {
-                continue;
-            }
-
-            if (empty($archive)) {
-                continue;
-            }
-
-            fclose($archive);
-        }
+        return $entry instanceof VpkEntry ? $entry : $this->entry($entry);
     }
 
     /**
-     * @return false|mixed|resource|null
+     * The (source, offset, length) byte ranges that make up an entry's data, in order.
+     * Returns null when a required chunk file is missing.
+     *
+     * @return list<array{0: resource, 1: int, 2: int}>|null
      */
-    private function openArchive(int $idx)
+    private function segments(VpkEntry $entry): ?array
+    {
+        $segments = [];
+
+        if ($entry->PreloadBytes > 0) {
+            $segments[] = [$this->stream->resource(), $entry->preloadOffset, $entry->PreloadBytes];
+        }
+
+        if ($entry->EntryLength > 0) {
+            if ($entry->isStoredInDirectory()) {
+                $segments[] = [$this->stream->resource(), $this->dataOffset + $entry->EntryOffset, $entry->EntryLength];
+            } else {
+                $archive = $this->openArchive($entry->ArchiveIndex);
+                if ($archive === null) {
+                    return null;
+                }
+
+                $segments[] = [$archive, $entry->EntryOffset, $entry->EntryLength];
+            }
+        }
+
+        return $segments;
+    }
+
+    /**
+     * @param  list<array{0: resource, 1: int, 2: int}>  $segments
+     * @param  resource  $destination
+     */
+    private function copySegments(array $segments, mixed $destination): bool
+    {
+        // Seek explicitly: stream_copy_to_stream() ignores an offset of 0.
+        return array_all(
+            $segments,
+            static fn (array $segment): bool => fseek($segment[0], $segment[1]) === 0
+                && stream_copy_to_stream($segment[0], $destination, $segment[2]) === $segment[2],
+        );
+    }
+
+    /**
+     * @return resource|null
+     */
+    private function openArchive(int $idx): mixed
     {
         $archive = $this->archives[$idx] ?? null;
         if ($archive === false) {
             return null;
         }
 
-        if (!empty($archive)) {
+        if (is_resource($archive)) {
             return $archive;
         }
 
-        // substr the _dir.vpk part.
-        $archiveName = mb_substr($this->vpkName, 0, -7);
-        $archiveName = sprintf('%s%03d.vpk', $archiveName, $idx);
-        $archivePath = $this->vpkDir . '/' . $archiveName;
-        if (!file_exists($archivePath)) {
-            // Archive is not present, mark as not available.
-            $this->archives[$idx] = false;
+        // Strip the "dir.vpk" suffix, keeping the trailing underscore.
+        $archiveName = sprintf('%s%03d.vpk', mb_substr($this->vpkName, 0, -7), $idx);
+        $archivePath = $this->vpkDir.'/'.$archiveName;
 
-            return null;
-        }
-
-        $archive = fopen($archivePath, 'rb');
+        $archive = is_file($archivePath) ? @fopen($archivePath, 'rb') : false;
         $this->archives[$idx] = $archive;
 
-        return $archive;
+        return $archive === false ? null : $archive;
     }
 
-    private function extractEntry(VpkEntry $entry, string $targetDir): bool
+    /**
+     * Stream an entry to $file via a temporary ".part" file, so an interrupted extraction
+     * never leaves a truncated file that later runs would mistake for a complete one.
+     */
+    private function extractEntry(VpkEntry $entry, string $file, bool $overwrite): bool
     {
-        $absFilePath = $targetDir . '/' . $entry->path;
-        if (file_exists($absFilePath)) {
+        if (! $overwrite && file_exists($file)) {
             return true;
         }
 
-        $archive = $this->openArchive($entry->ArchiveIndex);
-        if (empty($archive)) {
+        $segments = $this->segments($entry);
+        if ($segments === null) {
             return false;
         }
 
-        $absFileDir = dirname($absFilePath);
-        fseek($archive, $entry->EntryOffset);
-        $data = fread($archive, $entry->EntryLength);
-        if (!is_dir($absFileDir)) {
-            mkdir($absFileDir, 0777, true);
+        $dir = dirname($file);
+        if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
+            return false;
         }
 
-        file_put_contents($absFilePath, $data);
+        $tempFile = $file.'.part';
+        $handle = @fopen($tempFile, 'wb');
+        if ($handle === false) {
+            return false;
+        }
+
+        $copied = $this->copySegments($segments, $handle);
+        fclose($handle);
+
+        if (! $copied || ! rename($tempFile, $file)) {
+            @unlink($tempFile);
+
+            return false;
+        }
 
         return true;
     }

@@ -1,4 +1,5 @@
 {
+    "$schema": "https://raw.githubusercontent.com/open-southeners/vscode-laravel-pint/refs/heads/main/pint-schema.json",
     "preset": "laravel",
     "notPath": [
         "tests/TestCase.php",
@@ -13,12 +14,13 @@
         "lowercase_static_reference": true,
         "final_class": false,
         "final_internal_class": false,
-        "final_public_method_for_abstract_class": true,
+        "final_public_method_for_abstract_class": false,
         "fully_qualified_strict_types": true,
+        "is_null": true,
         "global_namespace_import": {
             "import_classes": true,
             "import_constants": true,
-            "import_functions": true
+            "import_functions": false
         },
         "mb_str_functions": true,
         "modernize_types_casting": true,
